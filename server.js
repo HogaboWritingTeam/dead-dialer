@@ -43,19 +43,19 @@ app.get("/token", (req, res) => {
   }
 });
 
-// 2) Voice-endpoint: hanterar både inkommande och utgående samtal
+// 2) Voice-endpoint: hanterar både inkommande och (senare) utgående samtal
 app.post("/voice", (req, res) => {
   const twiml = new twilio.twiml.VoiceResponse();
 
-  // Om webbdialern skickar ett "To"-nummer ska vi ringa ut
-  const to = req.body.To || req.query.To;
+  const from = req.body.From || "";
+  const to = req.body.To || "";
 
-  if (to) {
-    // UTGÅENDE: ring vidare till det angivna numret med vårt spanska nummer som callerId
+  if (from.startsWith("client:") && to) {
+    // UTGÅENDE från webbdialern (Twilio Client kommer ha From = "client:<identity>")
     const dial = twiml.dial({ callerId });
     dial.number(to);
   } else {
-    // INKOMMANDE: tills vidare, spela bara upp ett kort engelskt meddelande
+    // INKOMMANDE vanlig telefon → ge ett enkelt meddelande
     twiml.say(
       { voice: "alice", language: "en-US" },
       "Thank you for calling Hogabo Music. This line is currently used for scheduled callbacks. We will contact you as soon as possible."
@@ -65,6 +65,7 @@ app.post("/voice", (req, res) => {
   res.type("text/xml");
   res.send(twiml.toString());
 });
+
 
 
 // Starta servern
