@@ -8,42 +8,64 @@ const { VoiceGrant } = AccessToken;
 const app = express();
 const port = process.env.PORT || 3000;
 
-// Twilio-konfig från miljövariabler
-const accountSid = process.env.TWILIO_ACCOUNT_SID;
-const apiKey = process.env.TWILIO_API_KEY;
-const apiSecret = process.env.TWILIO_API_SECRET;
-const twimlAppSid = process.env.TWILIO_TWIML_APP_SID;
-const callerId = process.env.CALLER_ID || "";
+// -----------------------------
+// Twilio-konfiguration via .env
+// -----------------------------
+const accountSid = process.env.TWILIO_ACCOUNT_SID;     // AC...
+const apiKey = process.env.TWILIO_API_KEY;             // SK... (US-regionen)
+const apiSecret = process.env.TWILIO_API_SECRET;       // API secret
+const twimlAppSid = process.env.TWILIO_TWIML_APP_SID;  // AP... (TwiML App)
+const callerId = process.env.CALLER_ID || "";          // t.ex. +34865698050
 
+// -----------------------------
 // Middleware
+// -----------------------------
 app.use(express.json());
 app.use(express.urlencoded({ extended: false }));
+app.use(express.static("public"));
 
 // Hälsokontroll
 app.get("/health", (req, res) => {
   res.send("OK");
 });
 
-// Token-endpoint
+// Dialer-sidan
+app.get("/call", (req, res) => {
+  res.sendFile(__dirname + "/public/call.html");
+});
+
+// -----------------------------
+// Token-endpoint för Voice SDK v2
+// -----------------------------
 app.get("/token", (req, res) => {
   try {
     const identity = req.query.identity || "mahmoud";
 
-    const token = new AccessToken(accountSid, apiKey, apiSecret, { identity });
+    const token = new AccessToken(accountSid, apiKey, apiSecret, {
+      identity,
+      ttl: 3600 // 1 timme, justera vid behov
+    });
+
     const voiceGrant = new VoiceGrant({
       outgoingApplicationSid: twimlAppSid,
-      incomingAllow: false,
+      incomingAllow: false
     });
 
     token.addGrant(voiceGrant);
-    res.json({ token: token.toJwt(), identity });
+
+    res.json({
+      token: token.toJwt(),
+      identity
+    });
   } catch (err) {
     console.error("Error creating token:", err);
     res.status(500).json({ error: "Failed to create token" });
   }
 });
 
-// 2) Voice-endpoint: hanterar både inkommande och (senare) utgående samtal
+// -----------------------------
+// Voice-webhook för utgående / inkommande
+// -----------------------------
 app.post("/voice", (req, res) => {
   const twiml = new twilio.twiml.VoiceResponse();
 
@@ -51,11 +73,11 @@ app.post("/voice", (req, res) => {
   const to = req.body.To || "";
 
   if (from.startsWith("client:") && to) {
-    // UTGÅENDE från webbdialern (Twilio Client kommer ha From = "client:<identity>")
+    // Utgående samtal från webbdialern till PSTN
     const dial = twiml.dial({ callerId });
     dial.number(to);
   } else {
-    // INKOMMANDE vanlig telefon → ge ett enkelt meddelande
+    // Inkommande PSTN-samtal – enkel informationsprompt
     twiml.say(
       { voice: "alice", language: "en-US" },
       "Thank you for calling Hogabo Music. This line is currently used for scheduled callbacks. We will contact you as soon as possible."
@@ -66,9 +88,9 @@ app.post("/voice", (req, res) => {
   res.send(twiml.toString());
 });
 
-
-
+// -----------------------------
 // Starta servern
+// -----------------------------
 app.listen(port, () => {
   console.log(`Dead Dialer backend lyssnar på port ${port}`);
 });

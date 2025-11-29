@@ -1,0 +1,177 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Högabo Music - CRM Dialer</title>
+
+  <!-- Google Fonts -->
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@500;600&family=Roboto:wght@400;500&display=swap">
+
+  <style>
+    html, body {
+      height: 100%;
+      margin: 0;
+      padding: 0;
+    }
+
+    body {
+      font-family: "Roboto", system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
+      background: radial-gradient(circle at top, #f9f4e8 0%, #f2f2f2 40%, #e7eaef 100%);
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      color: #333;
+    }
+
+    .dialer-wrapper {
+      background: #ffffff;
+      padding: 2.2rem 2.6rem;
+      border-radius: 18px;
+      box-shadow: 0 16px 40px rgba(0, 0, 0, 0.12);
+      min-width: 340px;
+      max-width: 420px;
+      text-align: center;
+      border: 1px solid rgba(214, 170, 40, 0.25);
+    }
+
+    .logo {
+      max-width: 250px;
+      margin-bottom: 1.2rem;
+    }
+
+    h2 {
+      font-family: "Playfair Display", serif;
+      font-weight: 600;
+      letter-spacing: 0.08em;
+      font-size: 1.4rem;
+      margin: 0 0 0.4rem 0;
+      text-transform: uppercase;
+      color: #c59b2a;
+    }
+
+    .subheading {
+      font-size: 1.1rem;
+      margin: 0 0 1.4rem 0;
+      color: #666;
+    }
+
+    .number-label {
+      font-size: 0.85rem;
+      text-transform: uppercase;
+      letter-spacing: 0.12em;
+      color: #888;
+      margin-bottom: 0.4rem;
+    }
+
+    #number {
+      font-family: "Roboto", monospace;
+      font-size: 1.5rem;
+      margin: 0 0 1.4rem 0;
+      color: #222;
+      min-height: 1.5rem;
+    }
+
+    .buttons {
+      display: flex;
+      justify-content: center;
+      gap: 0.8rem;
+      margin-bottom: 1.2rem;
+    }
+
+    button {
+      min-width: 140px;
+      padding: 0.7rem 1.4rem;
+      font-size: 0.95rem;
+      font-weight: 500;
+      border-radius: 999px;
+      border: none;
+      cursor: pointer;
+      transition: transform 0.08s ease, box-shadow 0.08s ease, background-color 0.15s ease;
+      font-family: "Roboto", system-ui, sans-serif;
+    }
+
+    #callBtn {
+      background: #1a9b5b;
+      color: #ffffff;
+      box-shadow: 0 6px 14px rgba(26, 155, 91, 0.35);
+    }
+
+    #callBtn:hover:enabled {
+      background: #158149;
+      transform: translateY(-1px);
+      box-shadow: 0 8px 18px rgba(26, 155, 91, 0.45);
+    }
+
+    #callBtn:disabled {
+      background: #a8d5bf;
+      box-shadow: none;
+      cursor: default;
+    }
+
+    #hangupBtn {
+      background: #c63a3a;
+      color: #ffffff;
+      box-shadow: 0 6px 14px rgba(198, 58, 58, 0.35);
+    }
+
+    #hangupBtn:hover:enabled {
+      background: #a92f2f;
+      transform: translateY(-1px);
+      box-shadow: 0 8px 18px rgba(198, 58, 58, 0.45);
+    }
+
+    #hangupBtn:disabled {
+      background: #e3b4b4;
+      box-shadow: none;
+      cursor: default;
+    }
+
+    #status {
+      font-size: 0.85rem;
+      color: #666;
+      margin: 0;
+    }
+
+    .status-label {
+      font-weight: 500;
+      color: #444;
+    }
+
+    footer {
+      margin-top: 1.4rem;
+      font-size: 0.75rem;
+      color: #999;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+    }
+  </style>
+</head>
+<body>
+  <div class="dialer-wrapper">
+    <img src="HogaboMusic-logga2025.gif" alt="Högabo Music" class="logo">
+
+    <h2>Högabo Music - CRM Dialer</h2>
+    <p class="subheading">Outbound Calling</p>
+
+    <div class="number-label">Destination number</div>
+    <p id="number">–</p>
+
+    <div class="buttons">
+      <button id="callBtn">Call</button>
+      <button id="hangupBtn" disabled>Hang up</button>
+    </div>
+
+    <p id="status">
+      <span class="status-label">Status:</span> idle
+    </p>
+
+    <footer>
+      Högabo Music · Brand-Locked Estate Tailored Calls
+    </footer>
+  </div>
+
+  <!-- INGEN CDN för Twilio längre – bundlad fil från esbuild -->
+  <script src="/dialer.js"></script>
+</body>
+</html>
+
