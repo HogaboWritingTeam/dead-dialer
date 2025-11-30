@@ -27,6 +27,56 @@ const usageWebhookSecret = process.env.USAGE_WEBHOOK_SECRET || "";
 let budgetLocked = false;
 
 // -----------------------------
+// Basic Auth-konfig (två användare)
+// -----------------------------
+const basicUsers = [
+  {
+    user: process.env.BASIC_AUTH_USER_1 || "",
+    pass: process.env.BASIC_AUTH_PASS_1 || ""
+  },
+  {
+    user: process.env.BASIC_AUTH_USER_2 || "",
+    pass: process.env.BASIC_AUTH_PASS_2 || ""
+  }
+].filter(u => u.user && u.pass);
+
+// Middleware för Basic Auth på utvalda endpoints
+function basicAuth(req, res, next) {
+  // Om inga användare är konfigurerade: släpp igenom (hellre öppet än låst ute dig själv)
+  if (basicUsers.length === 0) {
+    return next();
+  }
+
+  const authHeader = req.headers.authorization || "";
+  const [type, encoded] = authHeader.split(" ");
+
+  if (type !== "Basic" || !encoded) {
+    res.set("WWW-Authenticate", 'Basic realm="Dead Dialer"');
+    return res.status(401).send("Authentication required");
+  }
+
+  let decoded = "";
+  try {
+    decoded = Buffer.from(encoded, "base64").toString("utf8");
+  } catch (e) {
+    res.set("WWW-Authenticate", 'Basic realm="Dead Dialer"');
+    return res.status(401).send("Invalid authentication");
+  }
+
+  const [user, pass] = decoded.split(":");
+  const match = basicUsers.find(u => u.user === user && u.pass === pass);
+
+  if (match) {
+    // Spara vem som är inloggad så vi kan använda det som Twilio-identity
+    req.authUser = match.user;
+    return next();
+  }
+
+  res.set("WWW-Authenticate", 'Basic realm="Dead Dialer"');
+  return res.status(401).send("Authentication failed");
+}
+
+// -----------------------------
 // Middleware
 // -----------------------------
 app.use(express.json());
@@ -38,15 +88,15 @@ app.get("/health", (req, res) => {
   res.send("OK");
 });
 
-// Dialer-sidan
-app.get("/call", (req, res) => {
+// Dialer-sidan (skyddad med Basic Auth)
+app.get("/call", basicAuth, (req, res) => {
   res.sendFile(__dirname + "/public/call.html");
 });
 
 // -----------------------------
-// Token-endpoint för Voice SDK v2
+// Token-endpoint för Voice SDK v2 (skyddad)
 // -----------------------------
-app.get("/token", (req, res) => {
+app.get("/token", basicAuth, (req, res) => {
   // Om budget-lås är aktivt: dela inte ut fler tokens
   if (budgetLocked) {
     console.warn("Token request blocked: budget lock active");
@@ -56,7 +106,8 @@ app.get("/token", (req, res) => {
   }
 
   try {
-    const identity = req.query.identity || "mahmoud";
+    // Identitet = inloggad användare om finns, annars ev. query-param, annars "mahmoud"
+    const identity = req.authUser || req.query.identity || "mahmoud";
 
     const token = new AccessToken(accountSid, apiKey, apiSecret, {
       identity,
@@ -91,7 +142,11 @@ app.post("/voice", (req, res) => {
 
   if (from.startsWith("client:") && to) {
     // Utgående samtal från webbdialern till PSTN
-    const dial = twiml.dial({ callerId });
+    const dial = twiml.dial({
+      callerId,
+      // Spela in från att motparten svarar, dual channel
+      record: "record-from-answer-dual"
+    });
     dial.number(to);
   } else {
     // Inkommande PSTN-samtal – enkel informationsprompt
