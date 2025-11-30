@@ -8818,7 +8818,9 @@
     callBtn.disabled = true;
     hangupBtn.disabled = true;
     try {
-      const call = await device.connect({ To: destinationNumber });
+      const call = await device.connect({
+        params: { To: destinationNumber }
+      });
       activeCall = call;
       updateStatus("In call");
       hangupBtn.disabled = false;

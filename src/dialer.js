@@ -102,7 +102,9 @@ callBtn.addEventListener("click", async () => {
   hangupBtn.disabled = true; // väntar tills vi har en call-instans
 
   try {
-    const call = await device.connect({ To: destinationNumber });
+const call = await device.connect({
+  params: { To: destinationNumber }
+});
 
     // Spara aktivt samtal så att hangup kan använda det
     activeCall = call;
