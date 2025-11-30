@@ -96,16 +96,10 @@
       box-shadow: 0 6px 14px rgba(26, 155, 91, 0.35);
     }
 
-    #callBtn:hover:enabled {
+    #callBtn:hover {
       background: #158149;
       transform: translateY(-1px);
       box-shadow: 0 8px 18px rgba(26, 155, 91, 0.45);
-    }
-
-    #callBtn:disabled {
-      background: #a8d5bf;
-      box-shadow: none;
-      cursor: default;
     }
 
     #hangupBtn {
@@ -114,16 +108,10 @@
       box-shadow: 0 6px 14px rgba(198, 58, 58, 0.35);
     }
 
-    #hangupBtn:hover:enabled {
+    #hangupBtn:hover {
       background: #a92f2f;
       transform: translateY(-1px);
       box-shadow: 0 8px 18px rgba(198, 58, 58, 0.45);
-    }
-
-    #hangupBtn:disabled {
-      background: #e3b4b4;
-      box-shadow: none;
-      cursor: default;
     }
 
     #status {
@@ -158,7 +146,7 @@
 
     <div class="buttons">
       <button id="callBtn">Call</button>
-      <button id="hangupBtn" disabled>Hang up</button>
+      <button id="hangupBtn">Hang up</button>
     </div>
 
     <p id="status">
@@ -170,7 +158,7 @@
     </footer>
   </div>
 
-  <!-- INGEN CDN för Twilio längre – bundlad fil från esbuild -->
+  <!-- Bundlad dialer-logik (Twilio SDK v2 inbäddad via esbuild) -->
   <script src="/dialer.js"></script>
 </body>
 </html>

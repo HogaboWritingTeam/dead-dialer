@@ -8753,13 +8753,16 @@
   var urlParams = new URLSearchParams(window.location.search);
   var destinationNumber = urlParams.get("to") || "";
   var numberEl = document.getElementById("number");
-  numberEl.textContent = destinationNumber || "\u2014";
+  numberEl.textContent = destinationNumber || "\u2013";
   var callBtn = document.getElementById("callBtn");
   var hangupBtn = document.getElementById("hangupBtn");
   var statusEl = document.getElementById("status");
   function updateStatus(text) {
     statusEl.innerHTML = `<span class="status-label">Status:</span> ${text}`;
   }
+  var device = null;
+  var activeCall = null;
+  callBtn.disabled = true;
   hangupBtn.disabled = true;
   async function getToken() {
     const res = await fetch("/token");
@@ -8772,43 +8775,28 @@
     }
     return data.token;
   }
-  var device;
-  var activeCall = null;
   async function initDevice() {
     try {
       updateStatus("Initializing\u2026");
       const token = await getToken();
       device = new Device(token, {
         logLevel: "debug"
-        // ev. fler options här vid behov
       });
       device.on("registered", () => {
         console.log("Device registered");
         updateStatus("Ready");
+        callBtn.disabled = false;
+        hangupBtn.disabled = true;
       });
       device.on("error", (error2) => {
-        console.error("Twilio Device error", error2);
+        console.error("Twilio Device error:", error2);
         updateStatus("Error: " + (error2.message || error2.code || "Unknown"));
-        callBtn.disabled = false;
+        callBtn.disabled = true;
         hangupBtn.disabled = true;
       });
       device.on("incoming", (call) => {
-        console.log("Incoming call -> reject");
+        console.log("Incoming call (reject)");
         call.reject();
-      });
-      device.on("connect", (call) => {
-        console.log("Call connected");
-        activeCall = call;
-        updateStatus("In call");
-        callBtn.disabled = true;
-        hangupBtn.disabled = false;
-      });
-      device.on("disconnect", () => {
-        console.log("Call disconnected");
-        activeCall = null;
-        updateStatus("Call ended");
-        callBtn.disabled = false;
-        hangupBtn.disabled = true;
       });
       await device.register();
     } catch (err) {
@@ -8826,22 +8814,47 @@
       updateStatus("Device not ready");
       return;
     }
+    updateStatus("Connecting\u2026");
+    callBtn.disabled = true;
+    hangupBtn.disabled = true;
     try {
-      updateStatus("Connecting\u2026");
-      const call = await device.connect({
-        params: { To: destinationNumber }
-      });
+      const call = await device.connect({ To: destinationNumber });
       activeCall = call;
+      updateStatus("In call");
+      hangupBtn.disabled = false;
+      call.on("disconnect", () => {
+        console.log("Call disconnected (event)");
+        activeCall = null;
+        updateStatus("Call ended");
+        callBtn.disabled = false;
+        hangupBtn.disabled = true;
+      });
     } catch (err) {
       console.error("Error starting call:", err);
       updateStatus("Error: " + (err.message || "Failed to connect"));
+      activeCall = null;
       callBtn.disabled = false;
       hangupBtn.disabled = true;
     }
   });
   hangupBtn.addEventListener("click", () => {
+    console.log("Hangup clicked");
     if (activeCall) {
-      activeCall.disconnect();
+      try {
+        activeCall.disconnect();
+      } catch (e) {
+        console.error("Error on activeCall.disconnect():", e);
+      }
+      activeCall = null;
+    } else if (device) {
+      try {
+        device.disconnectAll();
+      } catch (e) {
+        console.error("Error on device.disconnectAll():", e);
+      }
     }
+    callBtn.disabled = false;
+    hangupBtn.disabled = true;
+    updateStatus("Call ended (by you)");
   });
 })();

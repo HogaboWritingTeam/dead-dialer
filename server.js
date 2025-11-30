@@ -18,6 +18,15 @@ const twimlAppSid = process.env.TWILIO_TWIML_APP_SID;  // AP... (TwiML App)
 const callerId = process.env.CALLER_ID || "";          // t.ex. +34865698050
 
 // -----------------------------
+// Budget / usage-webhook-konfig
+// -----------------------------
+const usageWebhookSecret = process.env.USAGE_WEBHOOK_SECRET || "";
+
+// Enkel budget-flagga i minnet.
+// När Twilios Usage Trigger träffar sätter vi detta till true.
+let budgetLocked = false;
+
+// -----------------------------
 // Middleware
 // -----------------------------
 app.use(express.json());
@@ -38,6 +47,14 @@ app.get("/call", (req, res) => {
 // Token-endpoint för Voice SDK v2
 // -----------------------------
 app.get("/token", (req, res) => {
+  // Om budget-lås är aktivt: dela inte ut fler tokens
+  if (budgetLocked) {
+    console.warn("Token request blocked: budget lock active");
+    return res.status(403).json({
+      error: "Budget limit reached – no more calls allowed"
+    });
+  }
+
   try {
     const identity = req.query.identity || "mahmoud";
 
@@ -86,6 +103,33 @@ app.post("/voice", (req, res) => {
 
   res.type("text/xml");
   res.send(twiml.toString());
+});
+
+// -----------------------------
+// Twilio Usage Trigger webhook
+// -----------------------------
+app.post("/twilio/usage-alert", (req, res) => {
+  const secretFromQuery = req.query.secret || "";
+
+  if (!usageWebhookSecret) {
+    console.error("Usage webhook called, but USAGE_WEBHOOK_SECRET is not set");
+    return res.status(500).send("Server misconfigured");
+  }
+
+  if (secretFromQuery !== usageWebhookSecret) {
+    console.warn("Usage webhook: invalid secret in query");
+    return res.status(403).send("Forbidden");
+  }
+
+  // Twilio skickar data i body (application/x-www-form-urlencoded).
+  console.log("Usage webhook payload from Twilio:", req.body);
+
+  // Aktivera budget-lås
+  budgetLocked = true;
+  console.warn("Budget lock ACTIVATED via usage webhook");
+
+  // Svara Twilio
+  res.status(200).send("OK");
 });
 
 // -----------------------------

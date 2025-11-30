@@ -6,7 +6,7 @@ import { Device } from "@twilio/voice-sdk";
 const urlParams = new URLSearchParams(window.location.search);
 const destinationNumber = urlParams.get("to") || "";
 const numberEl = document.getElementById("number");
-numberEl.textContent = destinationNumber || "—";
+numberEl.textContent = destinationNumber || "–";
 
 // ------------------------------------------------------------
 // 2. UI-element
@@ -19,6 +19,12 @@ function updateStatus(text) {
   statusEl.innerHTML = `<span class="status-label">Status:</span> ${text}`;
 }
 
+// Håll reda på aktuell Device och aktivt samtal
+let device = null;
+let activeCall = null;
+
+// Inledningsvis: kan inte ringa, kan inte lägga på
+callBtn.disabled = true;
 hangupBtn.disabled = true;
 
 // ------------------------------------------------------------
@@ -39,9 +45,6 @@ async function getToken() {
 // ------------------------------------------------------------
 // 4. Initiera Twilio Voice Device (SDK v2)
 // ------------------------------------------------------------
-let device;
-let activeCall = null;
-
 async function initDevice() {
   try {
     updateStatus("Initializing…");
@@ -50,44 +53,27 @@ async function initDevice() {
 
     device = new Device(token, {
       logLevel: "debug"
-      // ev. fler options här vid behov
     });
 
     device.on("registered", () => {
       console.log("Device registered");
       updateStatus("Ready");
+      callBtn.disabled = false;   // nu får vi ringa
+      hangupBtn.disabled = true;  // men kan inte lägga på ännu
     });
 
     device.on("error", (error) => {
-      console.error("Twilio Device error", error);
+      console.error("Twilio Device error:", error);
       updateStatus("Error: " + (error.message || error.code || "Unknown"));
-      callBtn.disabled = false;
+      callBtn.disabled = true;
       hangupBtn.disabled = true;
     });
 
     device.on("incoming", (call) => {
-      console.log("Incoming call -> reject");
-      // Denna dialer är bara för utgående, så vi avvisar automatiskt
-      call.reject();
+      console.log("Incoming call (reject)");
+      call.reject(); // vi tar inte emot inkommande samtal i denna klient
     });
 
-    device.on("connect", (call) => {
-      console.log("Call connected");
-      activeCall = call;
-      updateStatus("In call");
-      callBtn.disabled = true;
-      hangupBtn.disabled = false;
-    });
-
-    device.on("disconnect", () => {
-      console.log("Call disconnected");
-      activeCall = null;
-      updateStatus("Call ended");
-      callBtn.disabled = false;
-      hangupBtn.disabled = true;
-    });
-
-    // Registrera enheten mot Twilio (nödvändigt i v2)
     await device.register();
   } catch (err) {
     console.error("Init device failed:", err);
@@ -95,11 +81,11 @@ async function initDevice() {
   }
 }
 
-// Kör direkt vid sidladdning
+// Starta init direkt
 initDevice();
 
 // ------------------------------------------------------------
-// 5. Starta samtal
+// 5. Starta utgående samtal
 // ------------------------------------------------------------
 callBtn.addEventListener("click", async () => {
   if (!destinationNumber) {
@@ -111,30 +97,61 @@ callBtn.addEventListener("click", async () => {
     return;
   }
 
+  updateStatus("Connecting…");
+  callBtn.disabled = true;
+  hangupBtn.disabled = true; // väntar tills vi har en call-instans
+
   try {
-    updateStatus("Connecting…");
+    const call = await device.connect({ To: destinationNumber });
 
-    const call = await device.connect({
-      params: { To: destinationNumber }
-    });
-
-    // resterande hanteras i event-listeners ("connect"/"error")
+    // Spara aktivt samtal så att hangup kan använda det
     activeCall = call;
+    updateStatus("In call");
+    hangupBtn.disabled = false; // nu kan vi lägga på
+
+    // När motparten/linjen lägger på
+    call.on("disconnect", () => {
+      console.log("Call disconnected (event)");
+      activeCall = null;
+      updateStatus("Call ended");
+      callBtn.disabled = false;
+      hangupBtn.disabled = true;
+    });
   } catch (err) {
     console.error("Error starting call:", err);
     updateStatus("Error: " + (err.message || "Failed to connect"));
+    activeCall = null;
     callBtn.disabled = false;
     hangupBtn.disabled = true;
   }
 });
 
 // ------------------------------------------------------------
-// 6. Lägg på
+// 6. Lägg på (från klienten)
 // ------------------------------------------------------------
 hangupBtn.addEventListener("click", () => {
+  console.log("Hangup clicked");
+
   if (activeCall) {
-    activeCall.disconnect();
-    // "disconnect"-eventet rensar UI
+    // Koppla ned pågående samtal
+    try {
+      activeCall.disconnect();
+    } catch (e) {
+      console.error("Error on activeCall.disconnect():", e);
+    }
+    activeCall = null;
+  } else if (device) {
+    // Fallback: koppla ned alla eventuella samtal
+    try {
+      device.disconnectAll();
+    } catch (e) {
+      console.error("Error on device.disconnectAll():", e);
+    }
   }
+
+  // UI tillbaka till "redo att ringa"
+  callBtn.disabled = false;
+  hangupBtn.disabled = true;
+  updateStatus("Call ended (by you)");
 });
 
