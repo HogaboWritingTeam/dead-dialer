@@ -4,7 +4,7 @@ import { Device } from "@twilio/voice-sdk";
 // 1. Läs ut nummer från URL (?to=...)
 // ------------------------------------------------------------
 const urlParams = new URLSearchParams(window.location.search);
-const destinationNumber = urlParams.get("to") || "";
+let destinationNumber = urlParams.get("to") || "";
 const numberEl = document.getElementById("number");
 numberEl.textContent = destinationNumber || "–";
 
@@ -14,9 +14,11 @@ numberEl.textContent = destinationNumber || "–";
 const callBtn = document.getElementById("callBtn");
 const hangupBtn = document.getElementById("hangupBtn");
 const statusEl = document.getElementById("status");
+const keypadEl = document.getElementById("keypad");
+const recentListEl = document.getElementById("recentNumbers");
 
 function updateStatus(text) {
-  statusEl.innerHTML = `<span class="status-label">Status:</span> ${text}`;
+statusEl.innerHTML = `<span class="status-label">Status:</span> ${text}`;
 }
 
 // Håll reda på aktuell Device och aktivt samtal
@@ -31,129 +33,207 @@ hangupBtn.disabled = true;
 // 3. Hämta access-token från backend
 // ------------------------------------------------------------
 async function getToken() {
-  const res = await fetch("/token");
-  if (!res.ok) {
-    throw new Error(`Token HTTP error ${res.status}`);
-  }
-  const data = await res.json();
-  if (!data.token) {
-    throw new Error("Token saknas i svar från /token");
-  }
-  return data.token;
+const res = await fetch("/token");
+if (!res.ok) {
+throw new Error(`Token HTTP error ${res.status}`);
+}
+const data = await res.json();
+if (!data.token) {
+throw new Error("Token saknas i svar från /token");
+}
+return data.token;
 }
 
 // ------------------------------------------------------------
 // 4. Initiera Twilio Voice Device (SDK v2)
 // ------------------------------------------------------------
 async function initDevice() {
-  try {
-    updateStatus("Initializing…");
+try {
+updateStatus("Initializing…");
 
-    const token = await getToken();
+const token = await getToken();
 
-    device = new Device(token, {
-      logLevel: "debug"
-    });
+device = new Device(token, {
+logLevel: "debug"
+});
 
-    device.on("registered", () => {
-      console.log("Device registered");
-      updateStatus("Ready");
-      callBtn.disabled = false;   // nu får vi ringa
-      hangupBtn.disabled = true;  // men kan inte lägga på ännu
-    });
+device.on("registered", () => {
+console.log("Device registered");
+updateStatus("Ready");
+callBtn.disabled = false; // nu får vi ringa
+hangupBtn.disabled = true; // men kan inte lägga på ännu
+});
 
-    device.on("error", (error) => {
-      console.error("Twilio Device error:", error);
-      updateStatus("Error: " + (error.message || error.code || "Unknown"));
-      callBtn.disabled = true;
-      hangupBtn.disabled = true;
-    });
+device.on("error", (error) => {
+console.error("Twilio Device error:", error);
+updateStatus("Error: " + (error.message || error.code || "Unknown"));
+callBtn.disabled = true;
+hangupBtn.disabled = true;
+});
 
-    device.on("incoming", (call) => {
-      console.log("Incoming call (reject)");
-      call.reject(); // vi tar inte emot inkommande samtal i denna klient
-    });
+device.on("incoming", (call) => {
+console.log("Incoming call (reject)");
+call.reject(); // vi tar inte emot inkommande samtal i denna klient
+});
 
-    await device.register();
-  } catch (err) {
-    console.error("Init device failed:", err);
-    updateStatus("Error: could not initialize device");
-  }
+await device.register();
+} catch (err) {
+console.error("Init device failed:", err);
+updateStatus("Error: could not initialize device");
+}
 }
 
 // Starta init direkt
 initDevice();
 
 // ------------------------------------------------------------
-// 5. Starta utgående samtal
+// 5. Senast ringda nummer (localStorage, klick-för-att-fylla-i)
+// ------------------------------------------------------------
+const RECENT_KEY = "hogabo_dialer_recent_numbers";
+const MAX_RECENT = 15;
+
+function loadRecentNumbers() {
+try {
+const raw = localStorage.getItem(RECENT_KEY);
+return raw ? JSON.parse(raw) : [];
+} catch (e) {
+return [];
+}
+}
+
+function saveRecentNumber(number) {
+if (!number) return;
+let list = loadRecentNumbers();
+list = list.filter((n) => n !== number);
+list.unshift(number);
+list = list.slice(0, MAX_RECENT);
+localStorage.setItem(RECENT_KEY, JSON.stringify(list));
+renderRecentNumbers();
+}
+
+function selectNumber(number) {
+destinationNumber = number;
+numberEl.textContent = number;
+const newUrl = window.location.pathname + "?to=" + encodeURIComponent(number);
+window.history.pushState({}, "", newUrl);
+}
+
+function renderRecentNumbers() {
+if (!recentListEl) return;
+const list = loadRecentNumbers();
+recentListEl.innerHTML = "";
+if (list.length === 0) {
+recentListEl.innerHTML = '<li class="recent-empty">No numbers yet</li>';
+return;
+}
+list.forEach((number) => {
+const li = document.createElement("li");
+const btn = document.createElement("button");
+btn.type = "button";
+btn.className = "recent-number-btn";
+btn.textContent = number;
+btn.addEventListener("click", () => selectNumber(number));
+li.appendChild(btn);
+recentListEl.appendChild(li);
+});
+}
+
+renderRecentNumbers();
+
+// ------------------------------------------------------------
+// 6. Starta utgående samtal
 // ------------------------------------------------------------
 callBtn.addEventListener("click", async () => {
-  if (!destinationNumber) {
-    updateStatus("No number to call");
-    return;
-  }
-  if (!device) {
-    updateStatus("Device not ready");
-    return;
-  }
+if (!destinationNumber) {
+updateStatus("No number to call");
+return;
+}
+if (!device) {
+updateStatus("Device not ready");
+return;
+}
 
-  updateStatus("Connecting…");
-  callBtn.disabled = true;
-  hangupBtn.disabled = true; // väntar tills vi har en call-instans
+updateStatus("Connecting…");
+callBtn.disabled = true;
+hangupBtn.disabled = true; // väntar tills vi har en call-instans
 
-  try {
+try {
 const call = await device.connect({
-  params: { To: destinationNumber }
+params: { To: destinationNumber }
 });
 
-    // Spara aktivt samtal så att hangup kan använda det
-    activeCall = call;
-    updateStatus("In call");
-    hangupBtn.disabled = false; // nu kan vi lägga på
+// Spara aktivt samtal så att hangup och knappsats kan använda det
+activeCall = call;
+updateStatus("In call");
+hangupBtn.disabled = false; // nu kan vi lägga på
+if (keypadEl) keypadEl.classList.add("visible");
 
-    // När motparten/linjen lägger på
-    call.on("disconnect", () => {
-      console.log("Call disconnected (event)");
-      activeCall = null;
-      updateStatus("Call ended");
-      callBtn.disabled = false;
-      hangupBtn.disabled = true;
-    });
-  } catch (err) {
-    console.error("Error starting call:", err);
-    updateStatus("Error: " + (err.message || "Failed to connect"));
-    activeCall = null;
-    callBtn.disabled = false;
-    hangupBtn.disabled = true;
-  }
+saveRecentNumber(destinationNumber);
+
+// När motparten/linjen lägger på
+call.on("disconnect", () => {
+console.log("Call disconnected (event)");
+activeCall = null;
+updateStatus("Call ended");
+callBtn.disabled = false;
+hangupBtn.disabled = true;
+if (keypadEl) keypadEl.classList.remove("visible");
+});
+} catch (err) {
+console.error("Error starting call:", err);
+updateStatus("Error: " + (err.message || "Failed to connect"));
+activeCall = null;
+callBtn.disabled = false;
+hangupBtn.disabled = true;
+if (keypadEl) keypadEl.classList.remove("visible");
+}
 });
 
 // ------------------------------------------------------------
-// 6. Lägg på (från klienten)
+// 7. Lägg på (från klienten)
 // ------------------------------------------------------------
 hangupBtn.addEventListener("click", () => {
-  console.log("Hangup clicked");
+console.log("Hangup clicked");
 
-  if (activeCall) {
-    // Koppla ned pågående samtal
-    try {
-      activeCall.disconnect();
-    } catch (e) {
-      console.error("Error on activeCall.disconnect():", e);
-    }
-    activeCall = null;
-  } else if (device) {
-    // Fallback: koppla ned alla eventuella samtal
-    try {
-      device.disconnectAll();
-    } catch (e) {
-      console.error("Error on device.disconnectAll():", e);
-    }
-  }
+if (activeCall) {
+// Koppla ned pågående samtal
+try {
+activeCall.disconnect();
+} catch (e) {
+console.error("Error on activeCall.disconnect():", e);
+}
+activeCall = null;
+} else if (device) {
+// Fallback: koppla ned alla eventuella samtal
+try {
+device.disconnectAll();
+} catch (e) {
+console.error("Error on device.disconnectAll():", e);
+}
+}
 
-  // UI tillbaka till "redo att ringa"
-  callBtn.disabled = false;
-  hangupBtn.disabled = true;
-  updateStatus("Call ended (by you)");
+// UI tillbaka till "redo att ringa"
+callBtn.disabled = false;
+hangupBtn.disabled = true;
+if (keypadEl) keypadEl.classList.remove("visible");
+updateStatus("Call ended (by you)");
 });
 
+// ------------------------------------------------------------
+// 8. Knappsats (DTMF) under pågående samtal
+// ------------------------------------------------------------
+if (keypadEl) {
+keypadEl.querySelectorAll("button[data-digit]").forEach((btn) => {
+btn.addEventListener("click", () => {
+const digit = btn.getAttribute("data-digit");
+if (activeCall) {
+try {
+activeCall.sendDigits(digit);
+console.log("Sent DTMF digit:", digit);
+} catch (e) {
+console.error("Error sending DTMF digit:", e);
+}
+}
+});
+});
+}
