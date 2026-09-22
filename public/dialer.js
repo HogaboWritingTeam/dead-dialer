@@ -14,6 +14,7 @@ const searchEl = document.getElementById("contactSearch");
 const addNameEl = document.getElementById("newContactName");
 const addNumberEl = document.getElementById("newContactNumber");
 const addBtn = document.getElementById("addContactBtn");
+const bannerEl = document.getElementById("callBanner");
 
 function updateStatus(text) {
 statusEl.innerHTML = `<span class="status-label">Status:</span> ${text}`;
@@ -23,6 +24,58 @@ function escapeHtml(str) {
 const div = document.createElement("div");
 div.textContent = str;
 return div.innerHTML;
+}
+
+// ------------------------------------------------------------
+// 1b. Stor, tydlig banner för samtalsutfall (upptaget/inget svar/fel)
+// ------------------------------------------------------------
+function showBanner(type, text) {
+if (!bannerEl) return;
+bannerEl.className = "call-banner visible " + type;
+bannerEl.textContent = text;
+}
+
+function hideBanner() {
+if (!bannerEl) return;
+bannerEl.className = "call-banner";
+bannerEl.textContent = "";
+}
+
+// Fråga servern vad utfallet blev för ett visst samtal (klientens CallSid).
+// Servern hinner inte alltid skriva klart innan vi frågar första gången,
+// så vi provar ett par gånger med kort mellanrum.
+async function checkDialOutcome(callSid, attempt) {
+if (!callSid) return;
+try {
+const res = await fetch(`/dial-status/${encodeURIComponent(callSid)}`);
+if (!res.ok) return;
+const data = await res.json();
+const status = data.status;
+
+if (status === "busy") {
+showBanner("busy", "UPPTAGET — mottagaren har upptaget");
+return;
+}
+if (status === "no-answer") {
+showBanner("noanswer", "INGET SVAR");
+return;
+}
+if (status === "failed" || status === "canceled") {
+showBanner("failed", "SAMTALET GICK INTE FRAM");
+return;
+}
+if (status === "completed") {
+// Vanligt avslutat samtal – ingen banner behövs
+return;
+}
+
+// Ingen status ännu – försök igen en gång till
+if ((attempt || 0) < 2) {
+setTimeout(() => checkDialOutcome(callSid, (attempt || 0) + 1), 500);
+}
+} catch (e) {
+console.error("Error checking dial outcome:", e);
+}
 }
 
 // ------------------------------------------------------------
@@ -116,6 +169,11 @@ hangupBtn.disabled = true;
 // ------------------------------------------------------------
 async function getToken() {
 const res = await fetch("/token");
+if (res.status === 401) {
+// Sessionen är inte längre giltig – skicka till inloggningssidan
+window.location.href = "/login?next=" + encodeURIComponent(window.location.pathname + window.location.search);
+throw new Error("Not authenticated");
+}
 if (!res.ok) {
 throw new Error(`Token HTTP error ${res.status}`);
 }
@@ -156,6 +214,18 @@ hangupBtn.disabled = true;
 device.on("incoming", (call) => {
 console.log("Incoming call (reject)");
 call.reject(); // vi tar inte emot inkommande samtal i denna klient
+});
+
+// Förnya access-token automatiskt strax innan den går ut, så sidan
+// aldrig behöver laddas om manuellt för att kunna ringa.
+device.on("tokenWillExpire", async () => {
+try {
+const newToken = await getToken();
+device.updateToken(newToken);
+console.log("Twilio access token refreshed");
+} catch (err) {
+console.error("Failed to refresh Twilio token:", err);
+}
 });
 
 await device.register();
@@ -333,6 +403,8 @@ addNumberEl.value = "";
 // 7. Starta utgående samtal
 // ------------------------------------------------------------
 callBtn.addEventListener("click", async () => {
+hideBanner();
+
 // Normalisera alltid direkt innan vi ringer, oavsett hur numret kom in
 const normalized = normalizePhoneNumber(numberEl ? numberEl.value : destinationNumber, loadDefaultCountryCode());
 setDestinationNumber(normalized, true);
@@ -364,13 +436,15 @@ if (keypadEl) keypadEl.classList.add("visible");
 upsertDialedNumber(destinationNumber);
 
 // När motparten/linjen lägger på
-call.on("disconnect", () => {
+call.on("disconnect", (endedCall) => {
 console.log("Call disconnected (event)");
+const callSid = endedCall && endedCall.parameters ? endedCall.parameters.CallSid : null;
 activeCall = null;
 updateStatus("Call ended");
 callBtn.disabled = false;
 hangupBtn.disabled = true;
 if (keypadEl) keypadEl.classList.remove("visible");
+checkDialOutcome(callSid, 0);
 });
 } catch (err) {
 console.error("Error starting call:", err);
@@ -413,20 +487,41 @@ updateStatus("Call ended (by you)");
 });
 
 // ------------------------------------------------------------
-// 9. Knappsats (DTMF) under pågående samtal
+// 9. Knappsats (DTMF) under pågående samtal – klick + tangentbord
 // ------------------------------------------------------------
-if (keypadEl) {
-keypadEl.querySelectorAll("button[data-digit]").forEach((btn) => {
-btn.addEventListener("click", () => {
-const digit = btn.getAttribute("data-digit");
-if (activeCall) {
+function sendDigit(digit) {
+if (!activeCall) return;
 try {
 activeCall.sendDigits(digit);
 console.log("Sent DTMF digit:", digit);
 } catch (e) {
 console.error("Error sending DTMF digit:", e);
 }
+if (keypadEl) {
+const btn = keypadEl.querySelector(`button[data-digit="${digit}"]`);
+if (btn) {
+btn.classList.add("pressed");
+setTimeout(() => btn.classList.remove("pressed"), 150);
+}
+}
+}
+
+if (keypadEl) {
+keypadEl.querySelectorAll("button[data-digit]").forEach((btn) => {
+btn.addEventListener("click", () => sendDigit(btn.getAttribute("data-digit")));
+});
+}
+
+// Tangentbordets siffror/asterisk/fyrkant skickas som tonval under
+// pågående samtal – men inte om man just då skriver i ett textfält
+// (t.ex. söker i telefonboken eller döper om en kontakt).
+window.addEventListener("keydown", (e) => {
+if (!activeCall) return;
+const tag = document.activeElement ? document.activeElement.tagName : "";
+if (tag === "INPUT" || tag === "TEXTAREA") return;
+
+const key = e.key;
+if (/^[0-9]$/.test(key) || key === "*" || key === "#") {
+sendDigit(key);
 }
 });
-});
-}

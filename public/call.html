@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8" />
-<title>Högabo Music - CRM Dialer</title>
+<title>Högabo Dialer</title>
 
 <!-- Google Fonts -->
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@500;600&family=Roboto:wght@400;500&display=swap">
@@ -32,11 +32,6 @@ min-width: 340px;
 max-width: 460px;
 text-align: center;
 border: 1px solid rgba(214, 170, 40, 0.25);
-}
-
-.logo {
-max-width: 250px;
-margin-bottom: 1.2rem;
 }
 
 h2 {
@@ -97,6 +92,39 @@ font-size: 0.8rem;
 font-family: "Roboto", monospace;
 text-align: center;
 color: #333;
+}
+
+.call-banner {
+display: none;
+font-size: 1.3rem;
+font-weight: 700;
+text-align: center;
+padding: 0.9rem 1rem;
+border-radius: 10px;
+margin-bottom: 1.2rem;
+letter-spacing: 0.02em;
+}
+
+.call-banner.visible {
+display: block;
+}
+
+.call-banner.busy {
+background: #fdecea;
+color: #a53d3d;
+border: 2px solid #e0a0a0;
+}
+
+.call-banner.noanswer {
+background: #fff4e0;
+color: #8a5a00;
+border: 2px solid #e0c080;
+}
+
+.call-banner.failed {
+background: #f1f3f5;
+color: #555;
+border: 2px solid #ccc;
 }
 
 .buttons {
@@ -179,6 +207,10 @@ box-shadow: none;
 background: #e2e2e2;
 transform: none;
 box-shadow: none;
+}
+
+.keypad button.pressed {
+background: #d0d0d0;
 }
 
 .recent-section {
@@ -348,9 +380,7 @@ text-transform: uppercase;
 </head>
 <body>
 <div class="dialer-wrapper">
-<img src="HogaboMusic-logga2025.gif" alt="Högabo Music" class="logo">
-
-<h2>Högabo Music - CRM Dialer</h2>
+<h2>Högabo Dialer</h2>
 <p class="subheading">Outbound Calling</p>
 
 <div class="number-label">Destination number</div>
@@ -360,6 +390,8 @@ text-transform: uppercase;
 <span>Default country code (used when no + or 00 is entered):</span>
 <input type="text" id="defaultCountryCode" value="+34">
 </div>
+
+<div class="call-banner" id="callBanner"></div>
 
 <div class="buttons">
 <button id="callBtn">Call</button>
@@ -397,7 +429,7 @@ text-transform: uppercase;
 </div>
 
 <footer>
-Högabo Music · Brand-Locked Estate Tailored Calls
+Högabo Dialer
 </footer>
 </div>
 
