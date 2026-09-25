@@ -239,13 +239,17 @@ updateStatus("Error: could not initialize device");
 initDevice();
 
 // ------------------------------------------------------------
-// 6. Telefonbok (namn + nummer, sökbar, redigerbar, i localStorage)
+// 6. Telefonbok (namn + nummer, sökbar, redigerbar)
 // ------------------------------------------------------------
+// Sparas permanent i Google Sheets via servern. localStorage används som
+// lokal kopia: den läses om servern inte svarar, och skrivs varje gång vi
+// lyckas hämta/spara mot servern.
 const CONTACTS_KEY = "hogabo_dialer_contacts";
 const MAX_CONTACTS = 50;
 let currentFilter = "";
+let contactsCache = null; // fylls vid start
 
-function loadContacts() {
+function loadLocalContacts() {
 try {
 const raw = localStorage.getItem(CONTACTS_KEY);
 if (!raw) return [];
@@ -258,8 +262,55 @@ return [];
 }
 }
 
-function saveContacts(list) {
+function saveLocalContacts(list) {
 localStorage.setItem(CONTACTS_KEY, JSON.stringify(list.slice(0, MAX_CONTACTS)));
+}
+
+function loadContacts() {
+if (contactsCache === null) {
+contactsCache = loadLocalContacts();
+}
+return contactsCache;
+}
+
+function saveContacts(list) {
+const trimmed = list.slice(0, MAX_CONTACTS);
+contactsCache = trimmed;
+saveLocalContacts(trimmed);
+
+// Skicka vidare till servern (Google Sheets). Går det inte fram behåller
+// vi den lokala kopian och säger till i statusraden.
+fetch("/contacts", {
+method: "PUT",
+headers: { "Content-Type": "application/json" },
+body: JSON.stringify({ contacts: trimmed })
+})
+.then((res) => {
+if (!res.ok && res.status !== 503) {
+console.error("Kunde inte spara telefonboken på servern:", res.status);
+updateStatus("Phone book: save failed (kept locally)");
+}
+})
+.catch((err) => {
+console.error("Nätverksfel vid sparning av telefonboken:", err);
+updateStatus("Phone book: offline (kept locally)");
+});
+}
+
+// Hämtar telefonboken från servern vid start. Lyckas det blir Sheets
+// facit; annars behålls den lokala kopian.
+async function syncContactsFromServer() {
+try {
+const res = await fetch("/contacts");
+if (!res.ok) return;
+const data = await res.json();
+if (!data.configured) return; // Sheets inte inkopplat än – kör lokalt
+contactsCache = data.contacts || [];
+saveLocalContacts(contactsCache);
+renderContacts();
+} catch (err) {
+console.error("Kunde inte hämta telefonboken från servern:", err);
+}
 }
 
 // Anropas efter ett lyckat samtal: lägg till numret om det inte redan finns
@@ -379,6 +430,7 @@ contactListEl.appendChild(li);
 }
 
 renderContacts();
+syncContactsFromServer();
 
 if (searchEl) {
 searchEl.addEventListener("input", () => {
@@ -485,6 +537,68 @@ hangupBtn.disabled = true;
 if (keypadEl) keypadEl.classList.remove("visible");
 updateStatus("Call ended (by you)");
 });
+
+// ------------------------------------------------------------
+// 8b. Röstmeddelanden (lista + uppspelning)
+// ------------------------------------------------------------
+const voicemailListEl = document.getElementById("voicemailList");
+const refreshVoicemailsBtn = document.getElementById("refreshVoicemailsBtn");
+
+function formatVoicemailTime(iso) {
+try {
+const d = new Date(iso);
+return d.toLocaleString();
+} catch (e) {
+return iso;
+}
+}
+
+async function loadVoicemails() {
+if (!voicemailListEl) return;
+voicemailListEl.innerHTML = '<li class="recent-empty">Loading…</li>';
+try {
+const res = await fetch("/voicemails");
+if (!res.ok) throw new Error("HTTP " + res.status);
+const data = await res.json();
+const list = data.voicemails || [];
+
+voicemailListEl.innerHTML = "";
+if (list.length === 0) {
+voicemailListEl.innerHTML = '<li class="recent-empty">No voicemails yet</li>';
+return;
+}
+
+list.forEach((vm) => {
+const li = document.createElement("li");
+li.className = "contact-row";
+
+const info = document.createElement("div");
+info.className = "recent-number-btn";
+info.style.cursor = "default";
+info.innerHTML =
+`<span class="contact-name">${escapeHtml(vm.from)}</span>` +
+`<span class="contact-number-sub">${formatVoicemailTime(vm.receivedAt)} · ${vm.duration}s</span>`;
+
+const audio = document.createElement("audio");
+audio.controls = true;
+audio.style.height = "2.2rem";
+audio.preload = "none";
+audio.src = "/voicemail-audio/" + encodeURIComponent(vm.recordingSid);
+
+li.appendChild(info);
+li.appendChild(audio);
+voicemailListEl.appendChild(li);
+});
+} catch (e) {
+console.error("Error loading voicemails:", e);
+voicemailListEl.innerHTML = '<li class="recent-empty">Could not load voicemails</li>';
+}
+}
+
+loadVoicemails();
+if (refreshVoicemailsBtn) {
+refreshVoicemailsBtn.addEventListener("click", loadVoicemails);
+}
 
 // ------------------------------------------------------------
 // 9. Knappsats (DTMF) under pågående samtal – klick + tangentbord
