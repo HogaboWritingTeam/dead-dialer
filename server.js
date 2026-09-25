@@ -338,10 +338,8 @@ app.post("/voice", (req, res) => {
     dial.number(to);
   } else {
     // Inkommande PSTN-samtal – riktig telefonsvarare
-    twiml.say(
-      { voice: "alice", language: "sv-SE" },
-      "Hej, du har nått Freddi. Jag kan inte svara just nu, lämna ett meddelande efter tonen."
-    );
+    // Egen inspelad hälsning (public/greeting.mp3) istället för datorröst.
+    twiml.play("https://desirable-forgiveness-production.up.railway.app/greeting.mp3");
     twiml.record({
       maxLength: 120,
       playBeep: true,
