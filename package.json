@@ -15,10 +15,10 @@
     "@twilio/voice-sdk": "^2.16.0",
     "dotenv": "^17.2.3",
     "express": "^5.1.0",
+    "googleapis": "^144.0.0",
     "twilio": "^5.10.6"
   },
   "devDependencies": {
     "esbuild": "^0.24.0"
   }
 }
-

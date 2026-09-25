@@ -45,6 +45,130 @@ function rememberDialStatus(callSid, status) {
 }
 
 // -----------------------------
+// Google Sheets: permanent lagring av telefonbok + röstmeddelanden
+// -----------------------------
+// Hela service account-nyckeln ligger base64-kodad i en miljövariabel
+// (Railway kan inte läsa filer från Freddis dator). Saknas den, eller går
+// något fel, faller allt tillbaka på minnet/localStorage — dialern ska
+// aldrig sluta fungera bara för att Sheets krånglar.
+const sheetsKeyB64 = process.env.GOOGLE_DIALER_SHEETS_KEY_B64 || "";
+const sheetId = process.env.GOOGLE_DIALER_SHEET_ID || "";
+
+let googleapis = null;
+try {
+  googleapis = require("googleapis");
+} catch (e) {
+  console.warn("googleapis-paketet saknas – Sheets-lagring avstängd");
+}
+
+let sheetsClient = null;
+
+function getSheetsClient() {
+  if (sheetsClient) return sheetsClient;
+  if (!googleapis || !sheetsKeyB64 || !sheetId) return null;
+
+  try {
+    const creds = JSON.parse(Buffer.from(sheetsKeyB64, "base64").toString("utf8"));
+    const auth = new googleapis.google.auth.JWT({
+      email: creds.client_email,
+      key: creds.private_key,
+      scopes: ["https://www.googleapis.com/auth/spreadsheets"]
+    });
+    sheetsClient = googleapis.google.sheets({ version: "v4", auth });
+    return sheetsClient;
+  } catch (err) {
+    console.error("Kunde inte initiera Google Sheets-klienten:", err.message);
+    return null;
+  }
+}
+
+const sheetsConfigured = () => Boolean(getSheetsClient());
+
+async function sheetReadContacts() {
+  const s = getSheetsClient();
+  if (!s) return null;
+  const r = await s.spreadsheets.values.get({
+    spreadsheetId: sheetId,
+    range: "Phonebook!A2:B"
+  });
+  const rows = r.data.values || [];
+  return rows
+    .filter((row) => row[0])
+    .map((row) => ({ number: row[0], name: row[1] || row[0] }));
+}
+
+async function sheetWriteContacts(contacts) {
+  const s = getSheetsClient();
+  if (!s) return false;
+  await s.spreadsheets.values.clear({
+    spreadsheetId: sheetId,
+    range: "Phonebook!A2:B"
+  });
+  if (contacts.length) {
+    await s.spreadsheets.values.update({
+      spreadsheetId: sheetId,
+      range: "Phonebook!A2",
+      valueInputOption: "RAW",
+      requestBody: { values: contacts.map((c) => [c.number, c.name || c.number]) }
+    });
+  }
+  return true;
+}
+
+async function sheetAppendVoicemail(vm) {
+  const s = getSheetsClient();
+  if (!s) return false;
+  await s.spreadsheets.values.append({
+    spreadsheetId: sheetId,
+    range: "Voicemails!A2",
+    valueInputOption: "RAW",
+    insertDataOption: "INSERT_ROWS",
+    requestBody: {
+      values: [[vm.receivedAt, vm.from, vm.duration, vm.recordingSid]]
+    }
+  });
+  return true;
+}
+
+async function sheetReadVoicemails() {
+  const s = getSheetsClient();
+  if (!s) return null;
+  const r = await s.spreadsheets.values.get({
+    spreadsheetId: sheetId,
+    range: "Voicemails!A2:D"
+  });
+  const rows = r.data.values || [];
+  return rows
+    .filter((row) => row[3])
+    .map((row) => ({
+      receivedAt: row[0] || "",
+      from: row[1] || "okänt nummer",
+      duration: row[2] || "0",
+      recordingSid: row[3]
+    }))
+    .reverse(); // nyast först
+}
+
+// -----------------------------
+// Röstbrevlåda: lista över mottagna meddelanden (i minnet, som reserv om
+// Sheets inte är konfigurerat eller inte svarar)
+// -----------------------------
+const voicemails = [];
+const MAX_VOICEMAILS = 50;
+
+function rememberVoicemail({ from, duration, recordingSid, receivedAt }) {
+  voicemails.unshift({
+    from,
+    duration,
+    recordingSid,
+    receivedAt: receivedAt || new Date().toISOString()
+  });
+  if (voicemails.length > MAX_VOICEMAILS) {
+    voicemails.length = MAX_VOICEMAILS;
+  }
+}
+
+// -----------------------------
 // Röstbrevlåda: e-postnotis via Resend när ett meddelande spelats in
 // -----------------------------
 const resendApiKey = process.env.RESEND_API_KEY || "";
@@ -362,16 +486,105 @@ app.post("/voice", (req, res) => {
 // -----------------------------
 app.post("/voicemail-status", async (req, res) => {
   const recordingUrl = req.body.RecordingUrl || "";
+  const recordingSid = req.body.RecordingSid || "";
   const from = req.body.From || "okänt nummer";
   const duration = req.body.RecordingDuration || "0";
 
   console.log("Voicemail inspelad:", { from, duration, recordingUrl });
+
+  if (recordingSid) {
+    const entry = {
+      from,
+      duration,
+      recordingSid,
+      receivedAt: new Date().toISOString()
+    };
+    rememberVoicemail(entry); // minnesreserv
+    try {
+      await sheetAppendVoicemail(entry); // permanent i Sheets
+    } catch (err) {
+      console.error("Kunde inte spara röstmeddelandet till Sheets:", err.message);
+    }
+  }
 
   if (recordingUrl) {
     await sendVoicemailNotification({ from, recordingUrl, duration });
   }
 
   res.status(200).send("OK");
+});
+
+// Lista över mottagna röstmeddelanden (skyddad).
+// Läser från Sheets när det är konfigurerat, annars från minnet.
+app.get("/voicemails", requireAuthApi, async (req, res) => {
+  try {
+    const fromSheet = await sheetReadVoicemails();
+    if (fromSheet) {
+      return res.json({ voicemails: fromSheet, source: "sheet" });
+    }
+  } catch (err) {
+    console.error("Kunde inte läsa röstmeddelanden från Sheets:", err.message);
+  }
+  res.json({ voicemails, source: "memory" });
+});
+
+// -----------------------------
+// Telefonbok mot Google Sheets (skyddad)
+// -----------------------------
+app.get("/contacts", requireAuthApi, async (req, res) => {
+  if (!sheetsConfigured()) {
+    return res.json({ configured: false, contacts: [] });
+  }
+  try {
+    const contacts = await sheetReadContacts();
+    res.json({ configured: true, contacts: contacts || [] });
+  } catch (err) {
+    console.error("Kunde inte läsa telefonboken från Sheets:", err.message);
+    res.status(500).json({ configured: true, error: "read_failed" });
+  }
+});
+
+app.put("/contacts", requireAuthApi, async (req, res) => {
+  if (!sheetsConfigured()) {
+    return res.status(503).json({ configured: false, error: "sheets_not_configured" });
+  }
+  const contacts = Array.isArray(req.body.contacts) ? req.body.contacts : null;
+  if (!contacts) {
+    return res.status(400).json({ error: "contacts_missing" });
+  }
+  try {
+    await sheetWriteContacts(contacts);
+    res.json({ ok: true, count: contacts.length });
+  } catch (err) {
+    console.error("Kunde inte spara telefonboken till Sheets:", err.message);
+    res.status(500).json({ error: "write_failed" });
+  }
+});
+
+// Spelar upp ett röstmeddelande – hämtar det via Twilio med servernycklarna
+// (webbläsaren behöver aldrig se Twilio-inloggningen).
+app.get("/voicemail-audio/:sid", requireAuthApi, async (req, res) => {
+  const sid = req.params.sid;
+  const url = `https://api.twilio.com/2010-04-01/Accounts/${accountSid}/Recordings/${sid}.mp3`;
+
+  try {
+    const twilioRes = await fetch(url, {
+      headers: {
+        Authorization: "Basic " + Buffer.from(`${apiKey}:${apiSecret}`).toString("base64")
+      }
+    });
+
+    if (!twilioRes.ok) {
+      return res.status(twilioRes.status).send("Kunde inte hämta inspelningen");
+    }
+
+    res.set("Content-Type", "audio/mpeg");
+    const buffer = Buffer.from(await twilioRes.arrayBuffer());
+    res.send(buffer);
+  } catch (err) {
+    console.error("Fel vid hämtning av röstmeddelande:", err);
+    res.status(500).send("Serverfel");
+  }
 });
 
 // -----------------------------
