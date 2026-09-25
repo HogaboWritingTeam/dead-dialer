@@ -45,6 +45,47 @@ function rememberDialStatus(callSid, status) {
 }
 
 // -----------------------------
+// Röstbrevlåda: e-postnotis via Resend när ett meddelande spelats in
+// -----------------------------
+const resendApiKey = process.env.RESEND_API_KEY || "";
+const resendFromEmail = process.env.RESEND_FROM_EMAIL || "";
+const voicemailNotifyEmail = process.env.VOICEMAIL_NOTIFY_EMAIL || "";
+
+async function sendVoicemailNotification({ from, recordingUrl, duration }) {
+  if (!resendApiKey || !resendFromEmail || !voicemailNotifyEmail) {
+    console.warn("Voicemail notification skipped: Resend/e-post inte konfigurerat i miljövariablerna");
+    return;
+  }
+
+  try {
+    const res = await fetch("https://api.resend.com/emails", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${resendApiKey}`,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        from: resendFromEmail,
+        to: [voicemailNotifyEmail],
+        subject: `Nytt röstmeddelande från ${from}`,
+        text:
+          `Du har fått ett röstmeddelande.\n\n` +
+          `Från: ${from}\n` +
+          `Längd: ${duration} sekunder\n` +
+          `Lyssna: ${recordingUrl}.mp3\n`
+      })
+    });
+
+    if (!res.ok) {
+      const body = await res.text();
+      console.error("Resend svarade med fel vid röstbrevlåde-notis:", res.status, body);
+    }
+  } catch (err) {
+    console.error("Fel vid utskick av röstbrevlåde-notis:", err);
+  }
+}
+
+// -----------------------------
 // Basic Auth-konfig (två användare)
 // -----------------------------
 const basicUsers = [
@@ -296,15 +337,43 @@ app.post("/voice", (req, res) => {
     });
     dial.number(to);
   } else {
-    // Inkommande PSTN-samtal – enkel informationsprompt
+    // Inkommande PSTN-samtal – riktig telefonsvarare
     twiml.say(
-      { voice: "alice", language: "en-US" },
-      "Thank you for calling. This line is currently used for scheduled callbacks. We will contact you as soon as possible."
+      { voice: "alice", language: "sv-SE" },
+      "Hej, du har nått Freddi. Jag kan inte svara just nu, lämna ett meddelande efter tonen."
+    );
+    twiml.record({
+      maxLength: 120,
+      playBeep: true,
+      recordingStatusCallback: "/voicemail-status",
+      recordingStatusCallbackMethod: "POST",
+      recordingStatusCallbackEvent: ["completed"]
+    });
+    twiml.say(
+      { voice: "alice", language: "sv-SE" },
+      "Inget meddelande mottogs. Hej då."
     );
   }
 
   res.type("text/xml");
   res.send(twiml.toString());
+});
+
+// -----------------------------
+// Röstmeddelande inspelat – Twilio POSTar hit när inspelningen är klar
+// -----------------------------
+app.post("/voicemail-status", async (req, res) => {
+  const recordingUrl = req.body.RecordingUrl || "";
+  const from = req.body.From || "okänt nummer";
+  const duration = req.body.RecordingDuration || "0";
+
+  console.log("Voicemail inspelad:", { from, duration, recordingUrl });
+
+  if (recordingUrl) {
+    await sendVoicemailNotification({ from, recordingUrl, duration });
+  }
+
+  res.status(200).send("OK");
 });
 
 // -----------------------------
