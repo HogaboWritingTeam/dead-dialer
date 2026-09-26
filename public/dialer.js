@@ -575,9 +575,12 @@ li.className = "contact-row";
 const info = document.createElement("div");
 info.className = "recent-number-btn";
 info.style.cursor = "default";
+const when = vm.day && vm.time
+? `${vm.day} ${vm.time}`
+: formatVoicemailTime(vm.receivedAt);
 info.innerHTML =
 `<span class="contact-name">${escapeHtml(vm.from)}</span>` +
-`<span class="contact-number-sub">${formatVoicemailTime(vm.receivedAt)} · ${vm.duration}s</span>`;
+`<span class="contact-number-sub">${escapeHtml(when)} · ${escapeHtml(String(vm.duration))}s</span>`;
 
 const audio = document.createElement("audio");
 audio.controls = true;
