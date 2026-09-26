@@ -115,16 +115,36 @@ async function sheetWriteContacts(contacts) {
   return true;
 }
 
+// Kalkylarkets kolumner: A=From B=Day C=Time D=Duration E=Voicemail link
+const VOICEMAIL_LINK_BASE =
+  "https://desirable-forgiveness-production.up.railway.app/voicemail-audio/";
+
+// Datum och klockslag i svensk/spansk lokal tid, inte serverns UTC
+function localDayTime(date) {
+  const opts = { timeZone: "Europe/Madrid" };
+  return {
+    day: date.toLocaleDateString("sv-SE", opts),
+    time: date.toLocaleTimeString("sv-SE", {
+      ...opts,
+      hour: "2-digit",
+      minute: "2-digit"
+    })
+  };
+}
+
 async function sheetAppendVoicemail(vm) {
   const s = getSheetsClient();
   if (!s) return false;
+  const { day, time } = localDayTime(new Date(vm.receivedAt || Date.now()));
   await s.spreadsheets.values.append({
     spreadsheetId: sheetId,
     range: "Voicemails!A2",
-    valueInputOption: "RAW",
+    valueInputOption: "USER_ENTERED",
     insertDataOption: "INSERT_ROWS",
     requestBody: {
-      values: [[vm.receivedAt, vm.from, vm.duration, vm.recordingSid]]
+      values: [
+        [vm.from, day, time, vm.duration, VOICEMAIL_LINK_BASE + vm.recordingSid]
+      ]
     }
   });
   return true;
@@ -135,16 +155,18 @@ async function sheetReadVoicemails() {
   if (!s) return null;
   const r = await s.spreadsheets.values.get({
     spreadsheetId: sheetId,
-    range: "Voicemails!A2:D"
+    range: "Voicemails!A2:E"
   });
   const rows = r.data.values || [];
   return rows
-    .filter((row) => row[3])
+    .filter((row) => row[4])
     .map((row) => ({
-      receivedAt: row[0] || "",
-      from: row[1] || "okänt nummer",
-      duration: row[2] || "0",
-      recordingSid: row[3]
+      from: row[0] || "okänt nummer",
+      day: row[1] || "",
+      time: row[2] || "",
+      duration: row[3] || "0",
+      // Sid:et ligger sist i länken – plocka ut det för uppspelaren på sidan
+      recordingSid: String(row[4]).split("/").pop()
     }))
     .reverse(); // nyast först
 }
@@ -464,10 +486,12 @@ app.post("/voice", (req, res) => {
     // Inkommande PSTN-samtal – riktig telefonsvarare
     // Egen inspelad hälsning (public/greeting.mp3) istället för datorröst.
     twiml.play("https://desirable-forgiveness-production.up.railway.app/greeting.mp3");
+    // Twilios inspelnings-callback skickar INTE med vem som ringde, så vi
+    // skickar med numret själva i adressen.
     twiml.record({
       maxLength: 120,
       playBeep: true,
-      recordingStatusCallback: "/voicemail-status",
+      recordingStatusCallback: "/voicemail-status?from=" + encodeURIComponent(from || "okänt nummer"),
       recordingStatusCallbackMethod: "POST",
       recordingStatusCallbackEvent: ["completed"]
     });
@@ -487,7 +511,8 @@ app.post("/voice", (req, res) => {
 app.post("/voicemail-status", async (req, res) => {
   const recordingUrl = req.body.RecordingUrl || "";
   const recordingSid = req.body.RecordingSid || "";
-  const from = req.body.From || "okänt nummer";
+  // Numret följer med i adressen från /voice (Twilio skickar det inte i body)
+  const from = req.query.from || req.body.From || "okänt nummer";
   const duration = req.body.RecordingDuration || "0";
 
   console.log("Voicemail inspelad:", { from, duration, recordingUrl });
