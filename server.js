@@ -171,6 +171,43 @@ async function sheetReadVoicemails() {
     .reverse(); // nyast först
 }
 
+// Kalkylarkets kolumner: A=Number B=Day C=Time D=Duration E=Status
+async function sheetAppendCallLog(entry) {
+  const s = getSheetsClient();
+  if (!s) return false;
+  const { day, time } = localDayTime(new Date(entry.receivedAt || Date.now()));
+  await s.spreadsheets.values.append({
+    spreadsheetId: sheetId,
+    range: "CallLog!A2",
+    valueInputOption: "USER_ENTERED",
+    insertDataOption: "INSERT_ROWS",
+    requestBody: {
+      values: [[entry.number, day, time, entry.duration, entry.status]]
+    }
+  });
+  return true;
+}
+
+async function sheetReadCallLog() {
+  const s = getSheetsClient();
+  if (!s) return null;
+  const r = await s.spreadsheets.values.get({
+    spreadsheetId: sheetId,
+    range: "CallLog!A2:E"
+  });
+  const rows = r.data.values || [];
+  return rows
+    .filter((row) => row[0])
+    .map((row) => ({
+      number: row[0],
+      day: row[1] || "",
+      time: row[2] || "",
+      duration: row[3] || "0",
+      status: row[4] || ""
+    }))
+    .reverse(); // nyast först
+}
+
 // -----------------------------
 // Röstbrevlåda: lista över mottagna meddelanden (i minnet, som reserv om
 // Sheets inte är konfigurerat eller inte svarar)
@@ -187,6 +224,39 @@ function rememberVoicemail({ from, duration, recordingSid, receivedAt }) {
   });
   if (voicemails.length > MAX_VOICEMAILS) {
     voicemails.length = MAX_VOICEMAILS;
+  }
+}
+
+// -----------------------------
+// Samtalslogg: nummer, tid och längd per uppringningsförsök (i minnet, som
+// reserv om Sheets inte är konfigurerat eller inte svarar)
+// -----------------------------
+const callLog = [];
+const MAX_CALL_LOG = 50;
+
+function rememberCallLog({ number, duration, status, receivedAt }) {
+  callLog.unshift({
+    number,
+    duration,
+    status,
+    receivedAt: receivedAt || new Date().toISOString()
+  });
+  if (callLog.length > MAX_CALL_LOG) {
+    callLog.length = MAX_CALL_LOG;
+  }
+}
+
+// Bro mellan /voice (som vet vilket nummer som slogs) och /dial-status (som
+// vet hur det gick och hur länge det varade) – nyckel = klientens CallSid.
+const pendingCallDestinations = {};
+const PENDING_CALL_TTL_MS = 5 * 60 * 1000; // 5 minuter
+
+function rememberPendingDestination(callSid, number) {
+  pendingCallDestinations[callSid] = { number, at: Date.now() };
+  for (const key of Object.keys(pendingCallDestinations)) {
+    if (Date.now() - pendingCallDestinations[key].at > PENDING_CALL_TTL_MS) {
+      delete pendingCallDestinations[key];
+    }
   }
 }
 
@@ -475,6 +545,11 @@ app.post("/voice", (req, res) => {
     // Utgående samtal från webbdialern till PSTN.
     // action/method gör att Twilio talar om för oss (via /dial-status) om
     // det blev upptaget, inget svar, eller om det gick fram.
+    // Sparar vilket nummer som slogs, så /dial-status kan logga det i
+    // samtalsloggen tillsammans med utfall och längd.
+    if (req.body.CallSid) {
+      rememberPendingDestination(req.body.CallSid, to);
+    }
     const dial = twiml.dial({
       callerId,
       record: "record-from-answer-dual",
@@ -553,6 +628,20 @@ app.get("/voicemails", requireAuthApi, async (req, res) => {
   res.json({ voicemails, source: "memory" });
 });
 
+// Samtalslogg: nummer, tid och längd per uppringningsförsök (skyddad).
+// Läser från Sheets när det är konfigurerat, annars från minnet.
+app.get("/call-log", requireAuthApi, async (req, res) => {
+  try {
+    const fromSheet = await sheetReadCallLog();
+    if (fromSheet) {
+      return res.json({ callLog: fromSheet, source: "sheet" });
+    }
+  } catch (err) {
+    console.error("Kunde inte läsa samtalsloggen från Sheets:", err.message);
+  }
+  res.json({ callLog, source: "memory" });
+});
+
 // -----------------------------
 // Telefonbok mot Google Sheets (skyddad)
 // -----------------------------
@@ -615,14 +704,32 @@ app.get("/voicemail-audio/:sid", requireAuthApi, async (req, res) => {
 // -----------------------------
 // Resultat av uppringningsförsöket (busy / no-answer / completed / failed)
 // -----------------------------
-app.post("/dial-status", (req, res) => {
+app.post("/dial-status", async (req, res) => {
   // CallSid här = klientens (webbläsarens) samtalsben, samma som
   // activeCall.parameters.CallSid i dialer.js
   const callSid = req.body.CallSid;
   const status = req.body.DialCallStatus;
+  const duration = req.body.DialCallDuration || "0";
 
   if (callSid && status) {
     rememberDialStatus(callSid, status);
+
+    const pending = pendingCallDestinations[callSid];
+    if (pending) {
+      delete pendingCallDestinations[callSid];
+      const entry = {
+        number: pending.number,
+        duration,
+        status,
+        receivedAt: new Date().toISOString()
+      };
+      rememberCallLog(entry); // minnesreserv
+      try {
+        await sheetAppendCallLog(entry); // permanent i Sheets
+      } catch (err) {
+        console.error("Kunde inte spara samtalsloggen till Sheets:", err.message);
+      }
+    }
   }
 
   // Inget mer ska hända med klientsamtalet härifrån – Twilio lägger på det.
