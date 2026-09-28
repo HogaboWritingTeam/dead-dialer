@@ -267,30 +267,35 @@ const declineBtn = document.getElementById("declineBtn");
 let ringtoneCtx = null;
 let ringtoneTimer = null;
 
-// Ringsignal genererad i webbläsaren (ingen ljudfil behövs): två korta toner,
-// upprepade var 3:e sekund, ungefär som en klassisk telefonsignal.
+// Ringsignal genererad i webbläsaren (ingen ljudfil behövs): en mjuk
+// två-tons klockklang (E5 → C5), upprepad var 2,5:e sekund. Högre volym än
+// tidigare version så den hörs genom högtalare, men med mjuk attack/utklang
+// istället för en hård ton – tydligt utan att vara jobbigt.
 function startRingtone() {
 stopRingtone();
 ringtoneCtx = new (window.AudioContext || window.webkitAudioContext)();
+const notes = [659.25, 523.25]; // E5, C5
 const ring = () => {
 if (!ringtoneCtx) return;
 const now = ringtoneCtx.currentTime;
-[0, 0.4].forEach((offset) => {
+notes.forEach((freq, i) => {
+const offset = i * 0.28;
 const osc = ringtoneCtx.createOscillator();
 const gain = ringtoneCtx.createGain();
-osc.frequency.value = 440;
+osc.type = "sine";
+osc.frequency.value = freq;
 gain.gain.setValueAtTime(0, now + offset);
-gain.gain.linearRampToValueAtTime(0.25, now + offset + 0.02);
-gain.gain.setValueAtTime(0.25, now + offset + 0.35);
-gain.gain.linearRampToValueAtTime(0, now + offset + 0.4);
+gain.gain.linearRampToValueAtTime(0.55, now + offset + 0.04);
+gain.gain.setValueAtTime(0.55, now + offset + 0.32);
+gain.gain.exponentialRampToValueAtTime(0.001, now + offset + 0.6);
 osc.connect(gain);
 gain.connect(ringtoneCtx.destination);
 osc.start(now + offset);
-osc.stop(now + offset + 0.4);
+osc.stop(now + offset + 0.6);
 });
 };
 ring();
-ringtoneTimer = setInterval(ring, 3000);
+ringtoneTimer = setInterval(ring, 2500);
 }
 
 function stopRingtone() {
@@ -315,6 +320,63 @@ if (!incomingBannerEl) return;
 incomingBannerEl.classList.remove("visible");
 }
 
+// Be om lov för skrivbordsnotiser i god tid (inte mitt i ett inkommande
+// samtal – då är det ofta för sent). Ofarligt att hoppa över om nekad.
+if (window.Notification && Notification.permission === "default") {
+Notification.requestPermission().catch(() => {});
+}
+
+let titleFlashTimer = null;
+const originalTitle = document.title;
+
+function startTitleFlash(fromNumber) {
+stopTitleFlash();
+let on = false;
+titleFlashTimer = setInterval(() => {
+document.title = on ? originalTitle : `☎ ${fromNumber}`;
+on = !on;
+}, 1000);
+}
+
+function stopTitleFlash() {
+if (titleFlashTimer) {
+clearInterval(titleFlashTimer);
+titleFlashTimer = null;
+}
+document.title = originalTitle;
+}
+
+let incomingNotification = null;
+
+function notifyIncomingCall(fromNumber) {
+// Försök lyfta fram fliken/fönstret – fungerar inte i alla webbläsare
+// utan användarinteraktion, men kostar inget att försöka.
+try { window.focus(); } catch (e) {}
+
+if (window.Notification && Notification.permission === "granted") {
+try {
+incomingNotification = new Notification("Incoming call", {
+body: fromNumber,
+requireInteraction: true,
+tag: "hogabo-dialer-incoming"
+});
+incomingNotification.onclick = () => {
+try { window.focus(); } catch (e) {}
+incomingNotification.close();
+};
+} catch (e) {
+console.error("Could not show notification:", e);
+}
+}
+}
+
+function closeIncomingNotification() {
+if (incomingNotification) {
+try { incomingNotification.close(); } catch (e) {}
+incomingNotification = null;
+}
+}
+
 // Gemensam upprensning när ett samtal (inkommande eller utgående) tar slut.
 function resetCallUi() {
 activeCall = null;
@@ -325,12 +387,18 @@ if (keypadEl) keypadEl.classList.remove("visible");
 
 function handleIncomingCall(call) {
 const fromNumber = (call.parameters && call.parameters.From) || "Unknown number";
-showIncomingBanner(fromNumber);
+const contactName = findContactName(fromNumber);
+const displayNumber = contactName ? `${contactName} (${fromNumber})` : fromNumber;
+showIncomingBanner(displayNumber);
 startRingtone();
-updateStatus("Incoming call: " + fromNumber);
+startTitleFlash(displayNumber);
+notifyIncomingCall(displayNumber);
+updateStatus("Incoming call: " + displayNumber);
 
 const cleanupRinging = () => {
 stopRingtone();
+stopTitleFlash();
+closeIncomingNotification();
 hideIncomingBanner();
 };
 
@@ -442,13 +510,17 @@ updateStatus("Phone book: offline (kept locally)");
 // facit; annars behålls den lokala kopian.
 async function syncContactsFromServer() {
 try {
-const res = await fetch("/contacts");
+const res = await fetch("/contacts", { cache: "no-store" });
 if (!res.ok) return;
 const data = await res.json();
 if (!data.configured) return; // Sheets inte inkopplat än – kör lokalt
 contactsCache = data.contacts || [];
 saveLocalContacts(contactsCache);
 renderContacts();
+// Röstmeddelanden/samtalslogg kan redan ha ritats upp utan namn (hann
+// ladda före telefonboken) – rita om dem nu när namnen finns.
+if (typeof loadVoicemails === "function") loadVoicemails();
+if (typeof loadCallLog === "function") loadCallLog();
 } catch (err) {
 console.error("Kunde inte hämta telefonboken från servern:", err);
 }
@@ -694,11 +766,24 @@ return iso;
 }
 }
 
+// Slår upp ett sparat namn för ett nummer i telefonboken, om det finns.
+function findContactName(number) {
+if (!number) return null;
+const match = loadContacts().find((c) => c.number === number);
+return match ? match.name : null;
+}
+
+function nameAndNumberHtml(number) {
+const name = findContactName(number);
+if (!name || name === number) return escapeHtml(number || "Unknown number");
+return `${escapeHtml(name)} <span class="contact-number-sub">(${escapeHtml(number)})</span>`;
+}
+
 async function loadVoicemails() {
 if (!voicemailListEl) return;
 voicemailListEl.innerHTML = '<li class="recent-empty">Loading…</li>';
 try {
-const res = await fetch("/voicemails");
+const res = await fetch("/voicemails", { cache: "no-store" });
 if (!res.ok) throw new Error("HTTP " + res.status);
 const data = await res.json();
 const list = data.voicemails || [];
@@ -720,7 +805,7 @@ const when = vm.day && vm.time
 ? `${vm.day} ${vm.time}`
 : formatVoicemailTime(vm.receivedAt);
 info.innerHTML =
-`<span class="contact-name">${escapeHtml(vm.from)}</span>` +
+`<span class="contact-name">${nameAndNumberHtml(vm.from)}</span>` +
 `<span class="contact-number-sub">${escapeHtml(when)} · ${escapeHtml(String(vm.duration))}s</span>`;
 
 const audio = document.createElement("audio");
@@ -762,7 +847,7 @@ async function loadCallLog() {
 if (!callLogListEl) return;
 callLogListEl.innerHTML = '<li class="recent-empty">Loading…</li>';
 try {
-const res = await fetch("/call-log");
+const res = await fetch("/call-log", { cache: "no-store" });
 if (!res.ok) throw new Error("HTTP " + res.status);
 const data = await res.json();
 const list = data.callLog || [];
@@ -779,7 +864,7 @@ li.className = "call-log-row";
 const when = entry.day && entry.time ? `${entry.day} ${entry.time}` : "";
 const statusLabel = CALL_STATUS_LABELS[entry.status] || entry.status || "";
 li.innerHTML =
-`<span class="contact-name">${escapeHtml(entry.number)}</span>` +
+`<span class="contact-name">${nameAndNumberHtml(entry.number)}</span>` +
 `<span class="contact-number-sub">${escapeHtml(when)} · ${escapeHtml(String(entry.duration))}s · ${escapeHtml(statusLabel)}</span>`;
 callLogListEl.appendChild(li);
 });
@@ -833,3 +918,71 @@ if (/^[0-9]$/.test(key) || key === "*" || key === "#") {
 sendDigit(key);
 }
 });
+
+// ------------------------------------------------------------
+// 10. Tillfällig vidarekoppling av inkommande samtal
+// ------------------------------------------------------------
+const forwardStatusEl = document.getElementById("forwardStatus");
+const forwardNumberEl = document.getElementById("forwardNumber");
+const forwardSaveBtn = document.getElementById("forwardSaveBtn");
+const forwardClearBtn = document.getElementById("forwardClearBtn");
+
+function renderForwardStatus(number) {
+if (!forwardStatusEl) return;
+if (number) {
+forwardStatusEl.textContent = "PÅ – vidarekopplar till " + number;
+forwardStatusEl.classList.add("on");
+} else {
+forwardStatusEl.textContent = "Av";
+forwardStatusEl.classList.remove("on");
+}
+}
+
+async function loadForwardStatus() {
+try {
+const res = await fetch("/forward", { cache: "no-store" });
+if (!res.ok) return;
+const data = await res.json();
+renderForwardStatus(data.number || "");
+if (data.number && forwardNumberEl) forwardNumberEl.value = data.number;
+} catch (e) {
+console.error("Could not load forwarding status:", e);
+}
+}
+
+async function setForward(number) {
+try {
+const res = await fetch("/forward", {
+method: "POST",
+headers: { "Content-Type": "application/json" },
+body: JSON.stringify({ number })
+});
+if (!res.ok) {
+const data = await res.json().catch(() => ({}));
+updateStatus("Forwarding: " + (data.error === "invalid_number" ? "invalid number" : "save failed"));
+return;
+}
+const data = await res.json();
+renderForwardStatus(data.number || "");
+} catch (e) {
+console.error("Could not save forwarding:", e);
+updateStatus("Forwarding: offline");
+}
+}
+
+if (forwardSaveBtn) {
+forwardSaveBtn.addEventListener("click", () => {
+const raw = forwardNumberEl ? forwardNumberEl.value.trim() : "";
+if (!raw) return;
+const normalized = normalizePhoneNumber(raw, loadDefaultCountryCode());
+setForward(normalized);
+});
+}
+if (forwardClearBtn) {
+forwardClearBtn.addEventListener("click", () => {
+if (forwardNumberEl) forwardNumberEl.value = "";
+setForward("");
+});
+}
+
+loadForwardStatus();
