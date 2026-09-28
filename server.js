@@ -393,6 +393,9 @@ function requireAuthPage(req, res, next) {
 
 // Middleware för API-anrop (fetch) – svarar 401 utan omdirigering
 function requireAuthApi(req, res, next) {
+  // API-svar ska aldrig cachas av webbläsaren – annars kan en uppdatering av
+  // t.ex. röstmeddelanden/samtalslogg visa gammal data efter "Refresh".
+  res.set("Cache-Control", "no-store");
   const match = findAuthenticatedUser(req);
   if (match) {
     req.authUser = match.user;
@@ -543,6 +546,13 @@ app.get("/token", requireAuthApi, (req, res) => {
 // vidare till telefonsvararen.
 const RING_TIMEOUT_SECONDS = 20;
 
+// -----------------------------
+// Tillfällig vidarekoppling – inkommande samtal går till ett externt
+// telefonnummer istället för webbläsardialern. Ligger bara i minnet
+// (försvinner vid omstart/ny driftsättning) – "tillfälligt" är avsiktligt.
+// -----------------------------
+let forwardNumber = "";
+
 // Telefonsvararens TwiML (egen inspelad hälsning + inspelning) – återanvänds
 // både när ingen svarar och (tills vidare) inte längre som förstahandsval.
 function buildVoicemailTwiml(twiml, from) {
@@ -588,15 +598,20 @@ app.post("/voice", (req, res) => {
     });
     dial.number(to);
   } else {
-    // Inkommande PSTN-samtal – ring upp webbläsardialern. Svarar ingen inom
-    // RING_TIMEOUT_SECONDS (eller avvisas samtalet) tar /incoming-status
-    // vid och kopplar till telefonsvararen istället.
+    // Inkommande PSTN-samtal.
     const dial = twiml.dial({
       timeout: RING_TIMEOUT_SECONDS,
       action: "/incoming-status?from=" + encodeURIComponent(from || "okänt nummer"),
       method: "POST"
     });
-    dial.client(CLIENT_IDENTITY);
+    if (forwardNumber) {
+      // Vidarekoppling aktiv – ring det externa numret istället för
+      // webbläsardialern. Svarar ingen inom RING_TIMEOUT_SECONDS går det
+      // vidare till telefonsvararen precis som vanligt.
+      dial.number(forwardNumber);
+    } else {
+      dial.client(CLIENT_IDENTITY);
+    }
   }
 
   res.type("text/xml");
@@ -606,9 +621,20 @@ app.post("/voice", (req, res) => {
 // Resultatet av inringningsförsöket till webbläsaren: om det inte blev
 // besvarat (inget svar/upptaget/avvisat) – koppla till telefonsvararen.
 // Besvarades det (completed) är samtalet redan klart, inget mer att göra.
-app.post("/incoming-status", (req, res) => {
+app.post("/incoming-status", async (req, res) => {
   const status = req.body.DialCallStatus;
   const from = req.query.from || req.body.From || "okänt nummer";
+  const duration = req.body.DialCallDuration || "0";
+
+  // Logga inringningsförsöket (besvarat eller inte) i samtalsloggen, precis
+  // som utgående samtal. Utan detta syns aldrig inkommande samtal där.
+  const entry = { number: from, duration, status, receivedAt: new Date().toISOString() };
+  rememberCallLog(entry);
+  try {
+    await sheetAppendCallLog(entry);
+  } catch (err) {
+    console.error("Kunde inte spara inkommande samtal i samtalsloggen:", err.message);
+  }
 
   const twiml = new twilio.twiml.VoiceResponse();
   if (status !== "completed") {
@@ -679,6 +705,29 @@ app.get("/call-log", requireAuthApi, async (req, res) => {
     console.error("Kunde inte läsa samtalsloggen från Sheets:", err.message);
   }
   res.json({ callLog, source: "memory" });
+});
+
+// -----------------------------
+// Tillfällig vidarekoppling av inkommande samtal (skyddad)
+// -----------------------------
+app.get("/forward", requireAuthApi, (req, res) => {
+  res.json({ number: forwardNumber });
+});
+
+app.post("/forward", requireAuthApi, (req, res) => {
+  const raw = (req.body.number || "").toString().trim();
+  if (!raw) {
+    forwardNumber = "";
+    console.log("Vidarekoppling avstängd");
+    return res.json({ number: forwardNumber });
+  }
+  const cleaned = raw.replace(/[\s\-\.\(\)\/]/g, "");
+  if (!/^\+[1-9]\d{6,14}$/.test(cleaned)) {
+    return res.status(400).json({ error: "invalid_number" });
+  }
+  forwardNumber = cleaned;
+  console.log("Vidarekoppling PÅ mot:", forwardNumber);
+  res.json({ number: forwardNumber });
 });
 
 // -----------------------------
