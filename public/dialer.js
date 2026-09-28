@@ -212,8 +212,8 @@ hangupBtn.disabled = true;
 });
 
 device.on("incoming", (call) => {
-console.log("Incoming call (reject)");
-call.reject(); // vi tar inte emot inkommande samtal i denna klient
+console.log("Incoming call from", call.parameters && call.parameters.From);
+handleIncomingCall(call);
 });
 
 // Förnya access-token automatiskt strax innan den går ut, så sidan
@@ -235,8 +235,149 @@ updateStatus("Error: could not initialize device");
 }
 }
 
+// Samtalet ska alltid använda en riktig mikrofon – aldrig den virtuella
+// "Dialer_ljud"-källan som Översätt-läget skapar för att låta Google Översätt
+// lyssna på datorns ljud. Utan detta skulle motparten höra sig själv i stället
+// för Freddi när Översätt-läget är på.
+const VIRTUAL_MIC_PATTERN = /dialer_ljud|dialer_mic|monitor of/i;
+
+async function preferPhysicalMicrophone() {
+if (!device || !device.audio) return;
+try {
+const inputs = Array.from(device.audio.availableInputDevices.values());
+const physical = inputs.find((d) =>
+d.deviceId !== "default" && d.deviceId !== "communications" &&
+d.label && !VIRTUAL_MIC_PATTERN.test(d.label));
+if (!physical) return; // inga namn ännu (ingen mikrofonrättighet) – låt Twilio välja
+await device.audio.setInputDevice(physical.deviceId);
+console.log("Microphone for calls:", physical.label);
+} catch (err) {
+console.error("Could not select microphone:", err);
+}
+}
+
+// ------------------------------------------------------------
+// 5b. Inkommande samtal – ringsignal + Svara/Avvisa
+// ------------------------------------------------------------
+const incomingBannerEl = document.getElementById("incomingBanner");
+const incomingNumberEl = document.getElementById("incomingCallerNumber");
+const answerBtn = document.getElementById("answerBtn");
+const declineBtn = document.getElementById("declineBtn");
+
+let ringtoneCtx = null;
+let ringtoneTimer = null;
+
+// Ringsignal genererad i webbläsaren (ingen ljudfil behövs): två korta toner,
+// upprepade var 3:e sekund, ungefär som en klassisk telefonsignal.
+function startRingtone() {
+stopRingtone();
+ringtoneCtx = new (window.AudioContext || window.webkitAudioContext)();
+const ring = () => {
+if (!ringtoneCtx) return;
+const now = ringtoneCtx.currentTime;
+[0, 0.4].forEach((offset) => {
+const osc = ringtoneCtx.createOscillator();
+const gain = ringtoneCtx.createGain();
+osc.frequency.value = 440;
+gain.gain.setValueAtTime(0, now + offset);
+gain.gain.linearRampToValueAtTime(0.25, now + offset + 0.02);
+gain.gain.setValueAtTime(0.25, now + offset + 0.35);
+gain.gain.linearRampToValueAtTime(0, now + offset + 0.4);
+osc.connect(gain);
+gain.connect(ringtoneCtx.destination);
+osc.start(now + offset);
+osc.stop(now + offset + 0.4);
+});
+};
+ring();
+ringtoneTimer = setInterval(ring, 3000);
+}
+
+function stopRingtone() {
+if (ringtoneTimer) {
+clearInterval(ringtoneTimer);
+ringtoneTimer = null;
+}
+if (ringtoneCtx) {
+ringtoneCtx.close().catch(() => {});
+ringtoneCtx = null;
+}
+}
+
+function showIncomingBanner(fromNumber) {
+if (!incomingBannerEl) return;
+if (incomingNumberEl) incomingNumberEl.textContent = fromNumber || "Unknown number";
+incomingBannerEl.classList.add("visible");
+}
+
+function hideIncomingBanner() {
+if (!incomingBannerEl) return;
+incomingBannerEl.classList.remove("visible");
+}
+
+// Gemensam upprensning när ett samtal (inkommande eller utgående) tar slut.
+function resetCallUi() {
+activeCall = null;
+callBtn.disabled = false;
+hangupBtn.disabled = true;
+if (keypadEl) keypadEl.classList.remove("visible");
+}
+
+function handleIncomingCall(call) {
+const fromNumber = (call.parameters && call.parameters.From) || "Unknown number";
+showIncomingBanner(fromNumber);
+startRingtone();
+updateStatus("Incoming call: " + fromNumber);
+
+const cleanupRinging = () => {
+stopRingtone();
+hideIncomingBanner();
+};
+
+call.on("accept", (acceptedCall) => {
+cleanupRinging();
+activeCall = acceptedCall;
+updateStatus("In call with " + fromNumber);
+callBtn.disabled = true;
+hangupBtn.disabled = false;
+if (keypadEl) keypadEl.classList.add("visible");
+});
+
+call.on("disconnect", () => {
+cleanupRinging();
+updateStatus("Call ended");
+resetCallUi();
+});
+
+// Den som ringer lägger på innan vi hinner svara
+call.on("cancel", () => {
+cleanupRinging();
+updateStatus("Missed call: " + fromNumber);
+resetCallUi();
+});
+
+call.on("reject", () => {
+cleanupRinging();
+updateStatus("Call declined");
+resetCallUi();
+});
+
+if (answerBtn) {
+answerBtn.onclick = () => call.accept();
+}
+if (declineBtn) {
+declineBtn.onclick = () => {
+cleanupRinging();
+call.reject();
+};
+}
+}
+
 // Starta init direkt
-initDevice();
+initDevice().then(() => {
+preferPhysicalMicrophone();
+if (device && device.audio) device.audio.on("deviceChange", preferPhysicalMicrophone);
+});
 
 // ------------------------------------------------------------
 // 6. Telefonbok (namn + nummer, sökbar, redigerbar)
@@ -601,6 +742,56 @@ voicemailListEl.innerHTML = '<li class="recent-empty">Could not load voicemails<
 loadVoicemails();
 if (refreshVoicemailsBtn) {
 refreshVoicemailsBtn.addEventListener("click", loadVoicemails);
+}
+
+// ------------------------------------------------------------
+// 8c. Samtalslogg (nummer, tid, längd, utfall)
+// ------------------------------------------------------------
+const callLogListEl = document.getElementById("callLogList");
+const refreshCallLogBtn = document.getElementById("refreshCallLogBtn");
+
+const CALL_STATUS_LABELS = {
+"completed": "Completed",
+"busy": "Busy",
+"no-answer": "No answer",
+"failed": "Failed",
+"canceled": "Canceled"
+};
+
+async function loadCallLog() {
+if (!callLogListEl) return;
+callLogListEl.innerHTML = '<li class="recent-empty">Loading…</li>';
+try {
+const res = await fetch("/call-log");
+if (!res.ok) throw new Error("HTTP " + res.status);
+const data = await res.json();
+const list = data.callLog || [];
+
+callLogListEl.innerHTML = "";
+if (list.length === 0) {
+callLogListEl.innerHTML = '<li class="recent-empty">No calls logged yet</li>';
+return;
+}
+
+list.forEach((entry) => {
+const li = document.createElement("li");
+li.className = "call-log-row";
+const when = entry.day && entry.time ? `${entry.day} ${entry.time}` : "";
+const statusLabel = CALL_STATUS_LABELS[entry.status] || entry.status || "";
+li.innerHTML =
+`<span class="contact-name">${escapeHtml(entry.number)}</span>` +
+`<span class="contact-number-sub">${escapeHtml(when)} · ${escapeHtml(String(entry.duration))}s · ${escapeHtml(statusLabel)}</span>`;
+callLogListEl.appendChild(li);
+});
+} catch (e) {
+console.error("Error loading call log:", e);
+callLogListEl.innerHTML = '<li class="recent-empty">Could not load call log</li>';
+}
+}
+
+loadCallLog();
+if (refreshCallLogBtn) {
+refreshCallLogBtn.addEventListener("click", loadCallLog);
 }
 
 // ------------------------------------------------------------

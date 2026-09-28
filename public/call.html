@@ -23,15 +23,42 @@ align-items: center;
 color: #333;
 }
 
-.dialer-wrapper {
+.dialer-layout {
+display: grid;
+grid-template-columns: 1fr;
+gap: 1.5rem;
+max-width: 460px;
+margin: 0 auto;
+align-items: start;
+}
+
+.panel {
 background: #ffffff;
-padding: 2.2rem 2.6rem;
 border-radius: 18px;
 box-shadow: 0 16px 40px rgba(0, 0, 0, 0.12);
+border: 1px solid rgba(214, 170, 40, 0.25);
+box-sizing: border-box;
+}
+
+.dialer-wrapper {
+padding: 2.2rem 2.6rem;
 min-width: 340px;
 max-width: 460px;
 text-align: center;
-border: 1px solid rgba(214, 170, 40, 0.25);
+}
+
+.side-panel {
+padding: 1.4rem 1.6rem;
+}
+
+@media (min-width: 900px) {
+.dialer-layout {
+grid-template-columns: 260px minmax(360px, 460px) 260px;
+max-width: 1100px;
+}
+.card-voicemail { grid-column: 1; grid-row: 1; }
+.card-dialer { grid-column: 2; grid-row: 1; }
+.card-extras { grid-column: 3; grid-row: 1; }
 }
 
 h2 {
@@ -125,6 +152,66 @@ border: 2px solid #e0c080;
 background: #f1f3f5;
 color: #555;
 border: 2px solid #ccc;
+}
+
+.incoming-overlay {
+display: none;
+position: fixed;
+inset: 0;
+background: rgba(20, 20, 20, 0.55);
+z-index: 1000;
+align-items: center;
+justify-content: center;
+}
+
+.incoming-overlay.visible {
+display: flex;
+}
+
+.incoming-card {
+background: #ffffff;
+border-radius: 18px;
+padding: 2rem 2.4rem;
+text-align: center;
+box-shadow: 0 20px 50px rgba(0, 0, 0, 0.3);
+min-width: 280px;
+animation: incoming-pulse 1s ease-in-out infinite;
+}
+
+@keyframes incoming-pulse {
+0%, 100% { transform: scale(1); }
+50% { transform: scale(1.02); }
+}
+
+.incoming-label {
+font-size: 0.85rem;
+text-transform: uppercase;
+letter-spacing: 0.12em;
+color: #888;
+margin-bottom: 0.4rem;
+}
+
+#incomingCallerNumber {
+font-family: "Roboto", monospace;
+font-size: 1.5rem;
+color: #222;
+margin-bottom: 1.4rem;
+}
+
+.incoming-buttons {
+display: flex;
+gap: 0.8rem;
+justify-content: center;
+}
+
+#answerBtn {
+background: #1a9b5b;
+color: #ffffff;
+}
+
+#declineBtn {
+background: #c63a3a;
+color: #ffffff;
 }
 
 .buttons {
@@ -376,10 +463,80 @@ color: #999;
 letter-spacing: 0.12em;
 text-transform: uppercase;
 }
+
+.side-panel .number-label {
+text-align: center;
+}
+
+.sheet-link {
+display: inline-block;
+margin-top: 0.4rem;
+color: #c59b2a;
+font-size: 0.9rem;
+text-decoration: none;
+font-weight: 500;
+}
+
+.sheet-link:hover {
+text-decoration: underline;
+}
+
+details.extra-section {
+margin-bottom: 1rem;
+}
+
+details.extra-section:last-child {
+margin-bottom: 0;
+}
+
+details.extra-section summary {
+cursor: pointer;
+font-size: 0.85rem;
+text-transform: uppercase;
+letter-spacing: 0.1em;
+color: #888;
+padding: 0.4rem 0;
+}
+
+details.extra-section[open] summary {
+margin-bottom: 0.6rem;
+}
+
+.call-log-row {
+display: flex;
+flex-direction: column;
+padding: 0.5rem 0.2rem;
+border-bottom: 1px solid #f0f0f0;
+text-align: left;
+}
+
+.call-log-row:last-child {
+border-bottom: none;
+}
 </style>
 </head>
 <body>
-<div class="dialer-wrapper">
+
+<div class="incoming-overlay" id="incomingBanner">
+<div class="incoming-card">
+<div class="incoming-label">Incoming call</div>
+<div id="incomingCallerNumber">–</div>
+<div class="incoming-buttons">
+<button type="button" id="answerBtn">Answer</button>
+<button type="button" id="declineBtn">Decline</button>
+</div>
+</div>
+</div>
+
+<div class="dialer-layout">
+
+<div class="panel side-panel card-voicemail">
+<div class="number-label">Voicemails</div>
+<button type="button" id="refreshVoicemailsBtn" class="add-contact-btn" style="width:100%;margin-bottom:0.6rem;">Refresh</button>
+<ul id="voicemailList"></ul>
+</div>
+
+<div class="dialer-wrapper panel card-dialer">
 <h2>Högabo Dialer</h2>
 <p class="subheading">Outbound Calling</p>
 
@@ -428,15 +585,23 @@ text-transform: uppercase;
 <ul id="recentNumbers"></ul>
 </div>
 
-<div class="recent-section">
-<div class="number-label">Voicemails</div>
-<button type="button" id="refreshVoicemailsBtn" class="add-contact-btn" style="width:100%;margin-bottom:0.6rem;">Refresh</button>
-<ul id="voicemailList"></ul>
-</div>
-
 <footer>
 Högabo Dialer
 </footer>
+</div>
+
+<div class="panel side-panel card-extras">
+<details class="extra-section" open>
+<summary>Kalkylark</summary>
+<a class="sheet-link" href="https://docs.google.com/spreadsheets/d/1LxC3t95FmjF61TBpQO0hTOIIGXkYePAFhrHQJTJVLeg/edit" target="_blank" rel="noopener">Öppna Högabo Dialer – data ↗</a>
+</details>
+<details class="extra-section">
+<summary>Samtalslogg</summary>
+<button type="button" id="refreshCallLogBtn" class="add-contact-btn" style="width:100%;margin-bottom:0.6rem;">Refresh</button>
+<ul id="callLogList"></ul>
+</details>
+</div>
+
 </div>
 
 <!-- Twilio Voice SDK v2 (global, ingen build-process krävs) -->
