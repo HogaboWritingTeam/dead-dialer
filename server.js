@@ -315,6 +315,11 @@ const basicUsers = [
   }
 ].filter(u => u.user && u.pass);
 
+// Identiteten /voice ringer upp när ett PSTN-samtal kommer in. Måste matcha
+// den identitet webbläsaren registrerar sig som (se /token ovan) – med bara
+// en inloggad användare är det den kontons användarnamn.
+const CLIENT_IDENTITY = (basicUsers[0] && basicUsers[0].user) || "user";
+
 // -----------------------------
 // Inloggning: cookie-session (för att lösenordshanterare ska kunna
 // spara/fylla i) med Basic Auth-header som bakåtkompatibel fallback.
@@ -507,7 +512,9 @@ app.get("/token", requireAuthApi, (req, res) => {
   }
 
   try {
-    // Identitet = inloggad användare om finns, annars ev. query-param, annars "user"
+    // Identitet = inloggad användare om finns, annars ev. query-param, annars "user".
+    // Samma identitet används av /voice för att ringa upp webbläsaren vid
+    // inkommande samtal (se CLIENT_IDENTITY nedan) – de måste vara lika.
     const identity = req.authUser || req.query.identity || "user";
 
     const token = new AccessToken(accountSid, apiKey, apiSecret, {
@@ -517,7 +524,7 @@ app.get("/token", requireAuthApi, (req, res) => {
 
     const voiceGrant = new VoiceGrant({
       outgoingApplicationSid: twimlAppSid,
-      incomingAllow: false
+      incomingAllow: true
     });
 
     token.addGrant(voiceGrant);
@@ -531,6 +538,29 @@ app.get("/token", requireAuthApi, (req, res) => {
     res.status(500).json({ error: "Failed to create token" });
   }
 });
+
+// Hur länge det ringer i webbläsaren innan det räknas som obesvarat och går
+// vidare till telefonsvararen.
+const RING_TIMEOUT_SECONDS = 20;
+
+// Telefonsvararens TwiML (egen inspelad hälsning + inspelning) – återanvänds
+// både när ingen svarar och (tills vidare) inte längre som förstahandsval.
+function buildVoicemailTwiml(twiml, from) {
+  twiml.play("https://desirable-forgiveness-production.up.railway.app/greeting.mp3");
+  // Twilios inspelnings-callback skickar INTE med vem som ringde, så vi
+  // skickar med numret själva i adressen.
+  twiml.record({
+    maxLength: 120,
+    playBeep: true,
+    recordingStatusCallback: "/voicemail-status?from=" + encodeURIComponent(from || "okänt nummer"),
+    recordingStatusCallbackMethod: "POST",
+    recordingStatusCallbackEvent: ["completed"]
+  });
+  twiml.say(
+    { voice: "alice", language: "sv-SE" },
+    "Inget meddelande mottogs. Hej då."
+  );
+}
 
 // -----------------------------
 // Voice-webhook för utgående / inkommande
@@ -558,22 +588,31 @@ app.post("/voice", (req, res) => {
     });
     dial.number(to);
   } else {
-    // Inkommande PSTN-samtal – riktig telefonsvarare
-    // Egen inspelad hälsning (public/greeting.mp3) istället för datorröst.
-    twiml.play("https://desirable-forgiveness-production.up.railway.app/greeting.mp3");
-    // Twilios inspelnings-callback skickar INTE med vem som ringde, så vi
-    // skickar med numret själva i adressen.
-    twiml.record({
-      maxLength: 120,
-      playBeep: true,
-      recordingStatusCallback: "/voicemail-status?from=" + encodeURIComponent(from || "okänt nummer"),
-      recordingStatusCallbackMethod: "POST",
-      recordingStatusCallbackEvent: ["completed"]
+    // Inkommande PSTN-samtal – ring upp webbläsardialern. Svarar ingen inom
+    // RING_TIMEOUT_SECONDS (eller avvisas samtalet) tar /incoming-status
+    // vid och kopplar till telefonsvararen istället.
+    const dial = twiml.dial({
+      timeout: RING_TIMEOUT_SECONDS,
+      action: "/incoming-status?from=" + encodeURIComponent(from || "okänt nummer"),
+      method: "POST"
     });
-    twiml.say(
-      { voice: "alice", language: "sv-SE" },
-      "Inget meddelande mottogs. Hej då."
-    );
+    dial.client(CLIENT_IDENTITY);
+  }
+
+  res.type("text/xml");
+  res.send(twiml.toString());
+});
+
+// Resultatet av inringningsförsöket till webbläsaren: om det inte blev
+// besvarat (inget svar/upptaget/avvisat) – koppla till telefonsvararen.
+// Besvarades det (completed) är samtalet redan klart, inget mer att göra.
+app.post("/incoming-status", (req, res) => {
+  const status = req.body.DialCallStatus;
+  const from = req.query.from || req.body.From || "okänt nummer";
+
+  const twiml = new twilio.twiml.VoiceResponse();
+  if (status !== "completed") {
+    buildVoicemailTwiml(twiml, from);
   }
 
   res.type("text/xml");
