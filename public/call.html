@@ -51,10 +51,10 @@ text-align: center;
 padding: 1.4rem 1.6rem;
 }
 
-@media (min-width: 900px) {
+@media (min-width: 820px) {
 .dialer-layout {
-grid-template-columns: 340px minmax(360px, 460px) 340px;
-max-width: 1240px;
+grid-template-columns: 420px minmax(400px, 560px) 420px;
+max-width: 1500px;
 }
 .card-voicemail { grid-column: 1; grid-row: 1; }
 .card-dialer { grid-column: 2; grid-row: 1; }
@@ -540,6 +540,31 @@ flex-wrap: wrap;
 padding: 0.5rem 0.2rem;
 border-bottom: 1px solid #f0f0f0;
 text-align: left;
+}
+
+.voicemail-row {
+display: flex;
+flex-direction: column;
+gap: 0.35rem;
+padding: 0.6rem 0.2rem;
+border-bottom: 1px solid #f0f0f0;
+text-align: left;
+}
+
+.voicemail-row:last-child {
+border-bottom: none;
+}
+
+.voicemail-info {
+display: flex;
+flex-direction: row;
+align-items: baseline;
+gap: 0.5rem;
+flex-wrap: wrap;
+}
+
+.voicemail-row audio {
+width: 100%;
 }
 
 .call-log-row:last-child {

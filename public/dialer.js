@@ -796,11 +796,10 @@ return;
 
 list.forEach((vm) => {
 const li = document.createElement("li");
-li.className = "contact-row";
+li.className = "voicemail-row";
 
 const info = document.createElement("div");
-info.className = "recent-number-btn";
-info.style.cursor = "default";
+info.className = "voicemail-info";
 const when = vm.day && vm.time
 ? `${vm.day} ${vm.time}`
 : formatVoicemailTime(vm.receivedAt);
@@ -810,6 +809,7 @@ info.innerHTML =
 
 const audio = document.createElement("audio");
 audio.controls = true;
+audio.style.width = "100%";
 audio.style.height = "2.2rem";
 audio.preload = "none";
 audio.src = "/voicemail-audio/" + encodeURIComponent(vm.recordingSid);
